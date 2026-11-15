@@ -1,57 +1,105 @@
 # FIREWATCH
 
-FIREWATCH is a static, country-level dashboard for exploring NASA FIRMS MODIS and VIIRS active-fire records over time. It includes a global activity map, a daily activity calendar, source coverage indicators, CSV export, and a preliminary multi-year seasonal view.
+**Country-level explorer for NASA FIRMS MODIS and VIIRS active-fire records, with a statistical cross-sensor calibration.**
 
-## Run locally
+MODIS (since 2000) and VIIRS (since 2012) detect fires differently: pixel sizes are about 1 km and 375 m, and the sensors differ in sensitivity and overpass timing. Their raw fire counts and fire radiative power (FRP) cannot be compared directly. FIREWATCH keeps the raw records visible, calibrates weekly VIIRS FRP onto the MODIS scale using the years when both flew, validates the result on held-out years, and labels how confident each country's calibration is.
 
-Requirements: Node.js 20+ and npm. The static dashboard does not need the Python API or a NASA key at runtime.
+Built for NASA Space Apps Challenge 2026: *MODIS and VIIRS Hot Spots*.
 
-```powershell
+## What it does
+
+- **Daily activity calendar** for any country and year, by sensor family, as detection counts or summed FRP.
+- **Raw sensors / Harmonized toggle:** compare reported values with calibrated values on one scale.
+- **Multi-year calendar (2020–2025)** with weeks above the six-year 90th percentile marked as unusually active.
+- **Typical-vs-this-year chart:** the selected year against the day-of-year median and 25th–75th percentile range.
+- **Fire-season dates:** start, peak and end, from the cumulative 5%–95% of annual FRP.
+- **Confidence label** (High / Medium / Low) and validation summary for every country.
+- **Global activity map**, source coverage indicators, and CSV and PNG export.
+
+Multi-year and seasonal views are marked **PRELIMINARY (6-year baseline)**.
+
+## Results
+
+| Measure | Value |
+|---|---|
+| Country series packaged | 236 country labels |
+| Source files processed | 3,859 |
+| Input rows | 265,659,156 |
+| Years / sensors | 2020–2025 · MODIS (Terra, Aqua), VIIRS (S-NPP, NOAA-20), Standard Processing |
+| Country fits with leave-one-year-out metrics | 167 |
+| Median R² | 0.798 |
+| Median holdout MdAPE | 40.9% |
+| Confidence classes | 67 High · 65 Medium · 104 Low |
+
+Example: Australia is rated High, with R² 0.939, holdout MdAPE 13.5% and 312 overlap weeks.
+
+Treat the median error as moderate: the calibration is useful for exploring patterns, not for precise conversion between sensors.
+
+## Quick start
+
+Requirements: Node.js 20+ and npm. The dashboard is static: it needs no backend, API key or NASA request at runtime.
+
+```bash
 npm install
-npm run start
+npm run start      # development server
+npm run build      # production build
+npm run preview    # serve the production build locally
+npm run check      # typecheck, lint, tests and build
 ```
 
-Vite opens the dashboard in your browser. For a production build, run `npm run build`; to view that build locally, run `npm run preview`.
+The map uses CARTO basemap tiles, so the page needs an internet connection.
 
-## Data provenance and processing
+## How the data was built
 
-The packaged data comes from NASA FIRMS Standard Processing (SP) MODIS and VIIRS country CSV files available locally to this project. The raw source CSVs are not included in the repository. Their source product, platform, country, acquisition date and available processing-version metadata are retained in generated outputs.
+1. **Source:** NASA FIRMS Standard Processing country CSV files for MODIS, VIIRS S-NPP and VIIRS NOAA-20. The raw CSVs (about 46 GB) are not in this repository.
+2. `backend/scripts/build_daily.py` streams the CSVs with DuckDB into compact daily aggregates (counts, FRP, vegetation-only and confidence-filtered values, day/night split).
+3. `backend/scripts/build_compact.py` generates the static JSON the dashboard reads.
+4. `backend/scripts/run_harmonize.py` fits the calibration and writes `frontend/public/data/harmonized/` and `frontend/public/data/methods_validation.json`.
 
-`backend/scripts/build_daily.py` streams local CSV input to compact daily Parquet aggregates. `backend/scripts/build_compact.py` generates the static JSON used by the dashboard. `backend/scripts/run_harmonize.py` creates country-level weekly calibration and seasonal analytics JSON under `frontend/public/data/harmonized/` and `frontend/public/data/methods_validation.json`.
+Aggregation totals were checked against direct DuckDB counts on the raw CSVs for India, Australia, Brazil and Bahrain (2020–2025, both sensor families) and matched exactly. This verifies the counting, not the scientific validity of the calibration.
 
-## Calibration method and limitations
+## Calibration method
 
-The selected statistical method is implemented in [backend/scripts/harmonize_core.py](backend/scripts/harmonize_core.py). It fits MODIS weekly vegetation FRP from VIIRS using a Theil-Sen log-log model, leave-one-year-out validation, confidence rules, and a deterministic global fallback. The app makes the calibration visible as preliminary statistical cross-sensor calibration. It is not a physical retrieval correction and does not establish comparable satellite observation opportunity. Weeks with no fire in either sensor are excluded from fitting.
+Implemented in `backend/scripts/harmonize_core.py`:
 
-The multi-year chart and fire-season line are labelled **PRELIMINARY (6-year baseline)**. The analysis is country-level. The current packaged span is 2020–2025; NOAA-21 is not included. Platform mix and local archive coverage vary by country and year, and missing dates do not mean zero fire activity. The method, validation metrics, assumptions and data limits are recorded in [frontend/public/data/methods_validation.json](frontend/public/data/methods_validation.json), [docs/METHODOLOGY.md](docs/METHODOLOGY.md), [docs/VALIDATION.md](docs/VALIDATION.md), and [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
+- Weekly vegetation-only FRP per country, MODIS (Terra + Aqua) and VIIRS (S-NPP + NOAA-20).
+- A Theil–Sen log–log fit predicts MODIS FRP from VIIRS FRP on weeks where both families report at least 5 MW. Country fits need at least 40 overlap weeks. Otherwise a deterministic global fit is used and the country is labelled Low.
+- **Leave-one-year-out validation** gives R² and median absolute percentage error (MdAPE) on years the fit did not see.
+- **Confidence:** High needs R² ≥ 0.7 and MdAPE ≤ 0.35; Medium needs R² ≥ 0.4 and MdAPE ≤ 0.60; everything else is Low.
+- **Harmonized value:** where both sensors report, the log-space mean of MODIS and calibrated VIIRS; where only one reports, that value. The uncertainty band is ±1.96 residual standard deviations in log space.
 
-Official source references: [NASA FIRMS](https://www.earthdata.nasa.gov/data/tools/firms), [MODIS active-fire user guide](https://cdn.earthdata.nasa.gov/conduit/upload/10575/MODIS_C6_Fire_User_Guide_B.pdf), [VIIRS active-fire user guide](https://viirsland.gsfc.nasa.gov/PDF/VIIRS_activefire_User_Guide.pdf), [FIRMS citation guidance](https://www.earthdata.nasa.gov/data/projects/lance#ed-firms-citation).
+Full detail: [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md) and [`docs/VALIDATION.md`](docs/VALIDATION.md).
 
-## Verification
+## Limitations
 
-Run the project checks with:
+- This is a **statistical calibration, not a physical retrieval correction**. It does not account for satellite observation opportunity.
+- Analysis is **country-level**, not custom areas or polygons.
+- The baseline is **six years (2020–2025)**, so seasonal results are preliminary. MODIS data back to 2000 would extend this.
+- **104 of 236 country calibrations are Low confidence.**
+- **NOAA-21 is not included.**
+- Empty dates mean no packaged detections, not confirmed absence of fire.
+- Weeks with no fire in either sensor are excluded from fitting.
 
-```powershell
-npm run check
+See [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md).
+
+## Repository structure
+
+```text
+frontend/            React + TypeScript + Vite dashboard
+  public/data/       packaged JSON the dashboard reads
+backend/
+  scripts/           data pipeline and calibration
+  tests/             pipeline and calibration tests
+docs/                methodology, validation, data, limitations, user guide
+scripts/             local development launcher
 ```
 
-Backend pytest uses a temporary directory outside the project (configured in `backend/pyproject.toml`). Data pipeline validation is documented in [docs/VALIDATION.md](docs/VALIDATION.md). Software tests do not replace scientific review.
+## Data and credits
 
-## Largest tracked files
+- **NASA FIRMS** (Fire Information for Resource Management System): MODIS and VIIRS 375 m active-fire products. See the [MODIS Active Fire User Guide](https://cdn.earthdata.nasa.gov/conduit/upload/10575/MODIS_C6_Fire_User_Guide_B.pdf) and the [VIIRS Active Fire User Guide](https://viirsland.gsfc.nasa.gov/PDF/VIIRS_activefire_User_Guide.pdf). Data: [firms.modaps.eosdis.nasa.gov](https://firms.modaps.eosdis.nasa.gov/).
+- Built with React, TypeScript, Vite, Recharts, MapLibre GL JS, Lucide, DuckDB, pandas and NumPy.
+- Basemap © [CARTO](https://carto.com/), map data © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright).
 
-Checked against the files currently tracked by Git. All are below 50 MB.
+## AI assistance
 
-| File | Size |
-|---|---:|
-| `package-lock.json` | 0.17 MB |
-| `backend/scripts/build_processed.py` | 0.04 MB |
-| `frontend/src/ui/App.tsx` | 0.03 MB |
-| `frontend/src/styles.css` | 0.02 MB |
-| `backend/tests/test_analytics_api.py` | 0.01 MB |
-| `frontend/src/ui/ProcessedComparison.tsx` | 0.01 MB |
-| `docs/DATA_ENGINE.md` | 0.01 MB |
-| `frontend/src/ui/MapView.tsx` | 0.01 MB |
-| `backend/tests/test_processing.py` | 0.01 MB |
-| `backend/app/local_archive.py` | 0.01 MB |
-
-Code was developed with AI assistance; data processing was verified against the original FIRMS files.
+AI assistants helped write and revise the code, documentation and data-processing scripts. The pipeline was run against the original NASA FIRMS Standard Processing CSV files, and aggregation totals were checked against the raw data as described above. These checks do not replace independent scientific review of the calibration.
