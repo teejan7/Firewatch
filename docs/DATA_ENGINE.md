@@ -41,3 +41,9 @@ The grid uses 0.25-degree cells. `lat_i` and `lon_i` are zero-based indices of t
 `GET /api/coverage` reports expected and processed files plus source date envelopes by product type, platform, and year. `GET /api/coverage/check?start=…&end=…&product_type=…&platform=…&bbox=…` checks the selected source-file date envelopes and suggests an alternate stream when available. These checks do not imply observation opportunity or zero activity; spatial coverage remains unassessed.
 
 The dashboard's broader selection flow, map aggregation, calibration, and anomaly analysis remain later phases. The processor does not perform scientific harmonization.
+
+## Static release data
+
+`backend/scripts/build_compact.py` exports selected country-scoped SP entries from the processed manifest into `frontend/public/data/`. It keeps daily records grouped by country, UTC date, sensor family, platform and product; the separate map grid is a 1-degree display aggregate. A quality index compares local extracted source filenames with processed outputs by country/product/year. Global NOAA-21 feeds are excluded from this country export. The script does not infer boundary polygons, calibrate sensors, or calculate anomalies. It caps the JSON output at 80 MiB and records a `not_calibrated` validation status.
+
+The active browser application reads only these static JSON files. The FastAPI endpoints in `docs/API.md` remain optional local analysis tools and are not required for the static dashboard or its preview.

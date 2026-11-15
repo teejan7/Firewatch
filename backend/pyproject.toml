@@ -1,8 +1,14 @@
 [tool.ruff]
 line-length = 110
 target-version = "py310"
-include = ["app/**/*.py", "tests/**/*.py"]
+include = ["app/**/*.py", "scripts/**/*.py", "tests/**/*.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/harmonize_core.py" = ["E702", "I001"]
+
+[tool.pytest.ini_options]
+addopts = "-p no:cacheprovider"

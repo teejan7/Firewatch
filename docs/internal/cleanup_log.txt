@@ -1,0 +1,23 @@
+# Cleanup log
+
+## Current attempt
+
+No cleanup items were removed. The project cleanup command was rejected by the automatic approval review before execution. The review specifically cited deletion of the `backups` folder and existing audit reports as actions whose targets/recovery value were not verified. No workaround was attempted.
+
+| Requested target | Observed size (bytes) | Freed (bytes) | Result |
+|---|---:|---:|---|
+| `.pytest_cache/` | 2,198 | 0 | Retained; deletion command rejected |
+| `.ruff_cache/` | 78 | 0 | Retained; deletion command rejected |
+| `.test-tmp/` | 74,222 | 0 | Retained; deletion command rejected |
+| `.tmp/` | 0 | 0 | Retained; deletion command rejected |
+| `frontend/dist/` | 45,588,245 | 0 | Retained; deletion command rejected |
+| `frontend/tsconfig.tsbuildinfo` | 551 | 0 | Retained; deletion command rejected |
+| `backups/` | 173,924 | 0 | Retained; approval review requested explicit authorization |
+| `process_2020_2026_compact.bat` | 724 | 0 | Retained; deletion command rejected |
+| root `disk_report.txt` | 404 | 0 | Retained; deletion command rejected |
+| `PROJECT_STRUCTURE.md` | 378,564 | 0 | Retained; approval review requested explicit authorization |
+| `AUDIT_REPORT.md` | 38,789 | 0 | Retained; approval review requested explicit authorization |
+| `AUDIT_V2.md` | 31,115 | 0 | Retained; approval review requested explicit authorization |
+| Recursive `__pycache__` directories | Not fully measured | 0 | Retained; recursive delete was part of rejected command |
+
+The user-provided extracted CSV source folder was not targeted. `data/processed/cell_shards/` and `data/processed/observations/` were inspected and retained because `backend/scripts/build_compact.py` reads them.

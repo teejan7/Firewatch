@@ -1,0 +1,39 @@
+# Pre-cleanup disk report
+
+Created: 2026-11-15 15:03:04 +05:30
+Free C: bytes: 14052548608
+
+| Top-level item | Bytes |
+|---|---:|
+| `.git` | 315230 |
+| `.github` | 919 |
+| `.pytest_cache` | 2198 |
+| `.ruff_cache` | 78 |
+| `.test-tmp` | 74222 |
+| `.tmp` | 0 |
+| `.venv` | 121820991 |
+| `backend` | 428213 |
+| `backups` | 173924 |
+| `data` | 57085389816 |
+| `docs` | 20988 |
+| `frontend` | 107264041 |
+| `node_modules` | 199522059 |
+| `scripts` | 3629 |
+| `submission` | 7995 |
+| `.env` | 46 |
+| `.env.example` | 365 |
+| `.gitignore` | 387 |
+| `AUDIT_REPORT.md` | 38789 |
+| `AUDIT_V2.md` | 31115 |
+| `disk_report.txt` | 404 |
+| `eslint.config.mjs` | 546 |
+| `netlify.toml` | 118 |
+| `package-lock.json` | 174622 |
+| `package.json` | 936 |
+| `process_2020_2026_compact.bat` | 724 |
+| `PROJECT_STRUCTURE.md` | 378564 |
+| `README.md` | 6518 |
+| `RELEASE_CHECKLIST.md` | 2952 |
+| `start.bat` | 317 |
+
+data/raw/extracted is user source data and was not modified. `data/processed/cell_shards` and `data/processed/observations` are read by `backend/scripts/build_compact.py` and are retained.

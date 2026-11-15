@@ -1,0 +1,13 @@
+FIREWATCH — source-aware wildfire activity dashboard
+
+Problem: Fire records from MODIS and VIIRS have different spatial resolutions and detection behavior, so their raw counts and fire radiative power (FRP) cannot be treated as directly comparable. Decision makers need a transparent way to inspect what the satellite products actually report over a chosen place and time.
+
+FIREWATCH packages NASA FIRMS Standard Processing source records into a lightweight static dashboard. A user can select a country, choose an available year, inspect a day-by-day activity calendar, compare MODIS and VIIRS source detections or FRP totals, browse an observed-location bubble map, review source-file coverage, and export selected-year CSV or a calendar PNG. Country series are loaded on demand, and the app runs without a backend or API key.
+
+The package includes 236 country series, generated from 3,205 country-scoped source files and 207,179,390 processed rows. Its available years span 2020–2025, but source coverage is incomplete and varies by product and year. January 2020 row-count checks for India, Australia and Brazil matched all nine available products exactly; January 2022 and 2024 MODIS checks and January 2022 S-NPP checks for those countries also matched raw CSV counts.
+
+The application does not claim completed MODIS↔VIIRS harmonization. Sensor footprints, observing opportunities, input coverage and holdout evidence are insufficient for a scientifically defensible conversion model. Accordingly, it preserves sensor/platform provenance and disables harmonized indices, anomaly scores and critical-period findings. NOAA-21 global archive files are out of scope because country attribution is not verified.
+
+Beneficiaries include emergency responders, scientists and land managers who need to inspect source records and their coverage before drawing conclusions. Future work is to acquire and validate complete paired datasets, develop a documented calibration and independent holdout, then add validated anomaly and seasonal analysis.
+
+Demo: [add published URL after deployment]
