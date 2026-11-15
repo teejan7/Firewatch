@@ -28,7 +28,7 @@ export default function ProcessedComparison({ api, apiStatus, bbox: sharedBbox, 
   const [productType, setProductType] = useState<'SP' | 'NRT'>('SP');
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
   const [result, setResult] = useState<CalendarResult | null>(null);
-  const [coverage, setCoverage] = useState<{ status: string; files_processed: number; files_discovered: number } | null>(null);
+  const [coverage, setCoverage] = useState<{ status: string; files_processed: number; files_discovered: number; files_failed?: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [coverageError, setCoverageError] = useState('');
@@ -39,7 +39,7 @@ export default function ProcessedComparison({ api, apiStatus, bbox: sharedBbox, 
   useEffect(() => {
     if (apiStatus !== 'online') { setCoverage(null); setCoverageError(''); return; }
     const controller = new AbortController();
-    apiGet<{ status: string; files_processed: number; files_discovered: number }>(`${api}/api/data-quality`, { signal: controller.signal }).then(setCoverage)
+    apiGet<{ status: string; files_processed: number; files_discovered: number; files_failed?: number }>(`${api}/api/data-quality`, { signal: controller.signal }).then(setCoverage)
       .catch(cause => { if (!controller.signal.aborted) { setCoverage(null); setCoverageError(errorMessage(cause, 'Could not read processed-data coverage.')); } });
     return () => controller.abort();
   }, [api, apiStatus]);
@@ -90,7 +90,7 @@ export default function ProcessedComparison({ api, apiStatus, bbox: sharedBbox, 
       <button className="comparison-query" onClick={query} disabled={loading||apiStatus!=='online'} title={apiStatus!=='online'?'API offline. Start with npm run dev.':''}><Search size={14}/>{loading ? 'Querying local data…' : 'Query processed data'}</button>
     </div>
     <fieldset className="platform-picker"><legend>Platforms · all available by default</legend>{platforms.map(platform => <label key={platform}><input type="checkbox" checked={selectedPlatforms.includes(platform)} onChange={event => setSelectedPlatforms(current => event.target.checked ? [...current, platform] : current.filter(value => value !== platform))}/>{platform}</label>)}</fieldset>
-    {coverage && <p className="coverage-line">{coverage.files_processed.toLocaleString()} of {coverage.files_discovered.toLocaleString()} discovered files processed · missing rows do not mean zero activity.</p>}
+    {coverage && <p className="coverage-line">{coverage.files_processed.toLocaleString()} of {coverage.files_discovered.toLocaleString()} discovered files processed · {coverage.files_failed || 0} failed · missing rows do not mean zero activity.</p>}
     {coverageError && <p className="coverage-line" role="status">Coverage status unavailable: {coverageError}</p>}
     {apiStatus !== 'online' && <p className="coverage-line" role="status">Local API {apiStatus}. Start it with <code>npm run dev</code> from the project root to query extracted archives.</p>}
     <p className="coverage-line">The map and overview above use the source named in the page status. This panel summarizes processed cell-days; its aggregate results do not replace map points.</p>

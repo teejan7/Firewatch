@@ -40,7 +40,9 @@ The **NASA FIRMS ARCHIVE** control queries a selected 1, 3, or 5 day window from
 - `backend/app/firms.py`: bounded NASA FIRMS API client. It uses an allowlist of current operational NRT products and fixed area extents.
 - `backend/app/validation.py`: strict FIRMS CSV schema validation, coordinate/date checks, and retention of original fields.
 - `backend/app/local_archive.py`: discovers available country/year/source CSVs and reads bounded windows while keeping MODIS and each VIIRS platform separately tagged.
-- `backend/scripts/build_processed.py`: incrementally validates FIRMS CSVs and writes resumable normalized Parquet partitions and quality manifests under `data/processed/`.
+- `backend/scripts/build_processed.py`: incrementally validates FIRMS CSVs and writes resumable Parquet cell summaries or row-level partitions plus quality manifests under `data/processed/`.
+
+For the deadline-friendly 2020–2026 compact archive, double-click `process_2020_2026_compact.bat`. On a low-space drive, after that build finishes successfully and the dashboard uses the new daily-cell archive, you may remove `data/processed/observations/` to reclaim its derived row-level Parquet files. Keep `data/processed/cell_shards/`, `data/processed/daily_cell/`, the manifests/reports, and all of `data/raw/`; the original CSVs are the source of truth.
 - `backend/app/main.py`: FastAPI health, live FIRMS, and CSV upload endpoints.
 - `backend/app/analytics_api.py`: bounded local Parquet calendar queries, AOI validation, coverage reporting, and explicit insufficient-baseline responses for unvalidated historical analyses.
 

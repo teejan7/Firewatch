@@ -181,7 +181,7 @@ def query_common_grid_comparison(
                  SUM(n_raw)::BIGINT AS raw_records,
                  SUM(frp_sum) AS frp_sum,
                  MAX(frp_max) AS frp_max
-          FROM read_parquet(?)
+          FROM read_parquet(?, hive_partitioning=true)
           WHERE {where}
           GROUP BY acq_date, lat_i, lon_i, sensor_family, platform, product_type
         )
@@ -198,7 +198,7 @@ def query_common_grid_comparison(
     union_rows = connection.execute(f"""
         WITH product_cells AS (
           SELECT acq_date, lat_i, lon_i, sensor_family, SUM(n_raw)::BIGINT AS raw_records
-          FROM read_parquet(?)
+          FROM read_parquet(?, hive_partitioning=true)
           WHERE {where}
           GROUP BY acq_date, lat_i, lon_i, sensor_family
         ), family_cells AS (

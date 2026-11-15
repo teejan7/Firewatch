@@ -9,10 +9,11 @@ from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.analytics_api import (
-    DAILY_CELLS,
     AnalyticsQueryError,
     AnalyticsTimeout,
+    check_coverage,
     coverage_status,
+    daily_cell_paths,
     get_calendar,
     unavailable_analysis,
     validate_bbox,
@@ -57,7 +58,7 @@ async def limit_api_rate(request, call_next):
 
 @app.get("/api/health")
 def health():
-    local_ready = DAILY_CELLS.is_file()
+    local_ready = bool(daily_cell_paths())
     return {"status": "ok", "data_status": "Processed local FIRMS archives" if local_ready else "Simulated demo data",
             "local_analytics_available": local_ready,
             "firms_api_configured": bool(os.getenv("FIRMS_MAP_KEY", "").strip()),
@@ -193,6 +194,31 @@ def local_data_quality():
         return coverage_status()
     except AnalyticsQueryError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/coverage")
+def local_coverage():
+    try:
+        return {"coverage": coverage_status().get("coverage_by_product_platform_year", []),
+                "interpretation": "Source-file date envelopes and processing completeness only; absence of detections is not zero activity."}
+    except AnalyticsQueryError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/coverage/check")
+def local_coverage_check(
+    start: date = Query(...),
+    end: date = Query(...),
+    product_type: str = Query("SP"),
+    platform: str | None = Query(None),
+    bbox: str | None = Query(None, description="west,south,east,north in WGS84; spatial completeness is reported as unknown"),
+):
+    try:
+        if platform is not None and platform not in {"Terra", "Aqua", "S-NPP", "NOAA-20", "NOAA-21"}:
+            raise AnalyticsQueryError("platform must be Terra, Aqua, S-NPP, NOAA-20, or NOAA-21.")
+        return check_coverage(start, end, product_type=product_type, platform=platform, bbox=_parse_bbox(bbox))
+    except AnalyticsQueryError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/calendar")

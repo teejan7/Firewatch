@@ -109,6 +109,44 @@ def discover_csv_files(raw_root: Path) -> list[dict[str, Any]]:
     return sorted(found, key=lambda item: (item["year"], item["product"], item["source_file"].casefold()))
 
 
+def coverage_table(entries: list[dict[str, Any]], manifest: dict[str, Any], processed_root: Path | None = None) -> list[dict[str, Any]]:
+    """Summarize discovered and processed source files by stream/platform/year."""
+    groups: dict[tuple[str, str, int], list[dict[str, Any]]] = defaultdict(list)
+    for entry in entries:
+        if entry.get("supported"):
+            groups[(entry["product_type"], entry["platform"], entry["year"])].append(entry)
+    rows = []
+    for (product_type, platform, year), files in sorted(groups.items()):
+        processed = []
+        failed = 0
+        for entry in files:
+            state = manifest.get("files", {}).get(entry["file_id"], {})
+            signature = {key: entry[key] for key in ("size_bytes", "modified_ns")}
+            if state.get("signature") != signature:
+                continue
+            output = processed_root / state["output_file"] if processed_root is not None and state.get("output_file") else None
+            if state.get("status") == "processed" and state.get("output_file") and (output is None or output.is_file()):
+                processed.append(state)
+            elif state.get("status") == "failed":
+                failed += 1
+        processed_count = len(processed)
+        status = "complete" if processed_count == len(files) else "partial" if processed_count else "failed" if failed else "not_processed"
+        rows.append({
+            "product_type": product_type,
+            "platform": platform,
+            "year": year,
+            "first_date": min((item.get("date_min") for item in processed if item.get("date_min")), default=None),
+            "last_date": max((item.get("date_max") for item in processed if item.get("date_max")), default=None),
+            "files_expected": len(files),
+            "files_processed": processed_count,
+            "files_failed": failed,
+            "row_count": sum(int(item.get("rows_processed", 0)) for item in processed),
+            "status": status,
+            "source_scope": "global" if all(file.get("scope") == "global" for file in files) else "country_files",
+        })
+    return rows
+
+
 def _qident(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
@@ -191,18 +229,55 @@ def _atomic_json(path: Path, value: Any) -> None:
     os.replace(temporary, path)
 
 
-def _output_path(entry: dict[str, Any], processed_root: Path) -> Path:
+def _output_path(entry: dict[str, Any], processed_root: Path, compact: bool = False) -> Path:
     partition = f"sensor_family={_safe_name(entry['sensor_family'])}/year={entry['year']}/product_type={entry['product_type']}/product={_safe_name(entry['product'])}"
-    return processed_root / "observations" / partition / f"{entry['file_id']}.parquet"
+    root = "cell_shards" if compact else "observations"
+    return processed_root / root / partition / f"{entry['file_id']}.parquet"
 
 
-def process_entry(entry: dict[str, Any], processed_root: Path, connection: duckdb.DuckDBPyConnection, force: bool = False) -> dict[str, Any]:
-    output = _output_path(entry, processed_root)
+def _write_parquet_atomic(connection: duckdb.DuckDBPyConnection, query: str, parameters: list[Any], output: Path) -> int:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(output.stem + "." + uuid.uuid4().hex + ".tmp.parquet")
+    try:
+        connection.execute(f"COPY ({query}) TO {_literal(str(temporary))} (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)", parameters)
+        rows = int(connection.execute("SELECT COUNT(*) FROM read_parquet(?)", [str(temporary)]).fetchone()[0])
+        os.replace(temporary, output)
+        return rows
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def process_entry(entry: dict[str, Any], processed_root: Path, connection: duckdb.DuckDBPyConnection, force: bool = False,
+                  compact: bool = False) -> dict[str, Any]:
+    storage_mode = "cell_shards" if compact else "observations"
+    output = _output_path(entry, processed_root, compact)
     manifest_path = processed_root / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {"schema_version": SCHEMA_VERSION, "files": {}}
     previous = manifest.get("files", {}).get(entry["file_id"], {})
     signature = {key: entry[key] for key in ("size_bytes", "modified_ns")}
-    if not force and previous.get("status") == "processed" and previous.get("signature") == signature and output.is_file():
+    same_source = not force and previous.get("status") == "processed" and previous.get("signature") == signature
+    if compact and same_source and previous.get("storage_mode", "observations") == "observations":
+        source_output = processed_root / previous.get("output_file", "")
+        if source_output.is_file():
+            free = shutil.disk_usage(processed_root.parent).free
+            if free - 2 * 1024**3 < max(64 * 1024**2, int(source_output.stat().st_size * 0.15)):
+                raise OSError(f"Insufficient free space to compact {entry['filename']} safely; keeping a 2 GiB reserve.")
+            shard_query = """SELECT acq_date,
+              CAST(GREATEST(0, LEAST(719, FLOOR((latitude + 90.0) / 0.25))) AS INTEGER) AS lat_i,
+              CAST(GREATEST(0, LEAST(1439, FLOOR((longitude + 180.0) / 0.25))) AS INTEGER) AS lon_i,
+              sensor_family, platform, product_type, EXTRACT(YEAR FROM acq_date)::INTEGER AS year, daynight,
+              COUNT(*)::BIGINT AS n_raw, 1::BIGINT AS n_dedup,
+              COUNT(DISTINCT source_file)::BIGINT AS source_files, SUM(frp) AS frp_sum, MAX(frp) AS frp_max
+              FROM read_parquet(?) GROUP BY acq_date, lat_i, lon_i, sensor_family, platform, product_type, year, daynight"""
+            _write_parquet_atomic(connection, shard_query, [str(source_output)], output)
+            converted = {**previous, "storage_mode": "cell_shards",
+                         "output_file": str(output.relative_to(processed_root)).replace("\\", "/")}
+            manifest.setdefault("files", {})[entry["file_id"]] = converted
+            manifest["updated_at_utc"] = datetime.now(timezone.utc).isoformat()
+            _atomic_json(manifest_path, manifest)
+            return {**converted, "status": "converted", "rows_processed": converted.get("rows_processed", 0)}
+    if (same_source and previous.get("storage_mode", "observations") == storage_mode and output.is_file()):
         cached = connection.execute(f"""SELECT LIST(DISTINCT processing_version) FILTER (WHERE processing_version IS NOT NULL),
           COUNT(*) FILTER (WHERE acq_time IS NULL), COUNT(*) FILTER (WHERE satellite IS NULL),
           COUNT(*) FILTER (WHERE instrument IS NULL), COUNT(*) FILTER (WHERE daynight IS NULL),
@@ -279,22 +354,28 @@ def process_entry(entry: dict[str, Any], processed_root: Path, connection: duckd
     # Reserve room for a temporary output and protect the user's remaining disk.
     free = shutil.disk_usage(processed_root.parent).free if processed_root.parent.exists() else shutil.disk_usage(processed_root.anchor).free
     reserve = 2 * 1024**3
-    if free - reserve < max(64 * 1024**2, int(entry["size_bytes"] * 0.75)):
+    expansion = 0.10 if compact else 0.75
+    if free - reserve < max(64 * 1024**2, int(entry["size_bytes"] * expansion)):
         raise OSError(f"Insufficient free space to process {entry['filename']} safely; keeping a 2 GiB reserve. Free space or process a smaller subset.")
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.with_name(output.stem + "." + uuid.uuid4().hex + ".tmp.parquet")
-    try:
-        connection.execute(f"COPY ({select_sql} {valid_where}) TO {_literal(str(temporary))} (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)")
-        os.replace(temporary, output)
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
+    if compact:
+        cell_query = f"""SELECT acq_date,
+          CAST(GREATEST(0, LEAST(719, FLOOR((latitude + 90.0) / 0.25))) AS INTEGER) AS lat_i,
+          CAST(GREATEST(0, LEAST(1439, FLOOR((longitude + 180.0) / 0.25))) AS INTEGER) AS lon_i,
+          sensor_family, platform, product_type, EXTRACT(YEAR FROM acq_date)::INTEGER AS year, daynight,
+          COUNT(*)::BIGINT AS n_raw, 1::BIGINT AS n_dedup, 1::BIGINT AS source_files,
+          SUM(frp) AS frp_sum, MAX(frp) AS frp_max
+          FROM ({select_sql} {valid_where}) AS normalized
+          GROUP BY acq_date, lat_i, lon_i, sensor_family, platform, product_type, year, daynight"""
+        _write_parquet_atomic(connection, cell_query, [], output)
+    else:
+        _write_parquet_atomic(connection, f"{select_sql} {valid_where}", [], output)
 
     result = {
         **entry,
         "signature": signature,
         "status": "processed",
+        "storage_mode": storage_mode,
         "output_file": str(output.relative_to(processed_root)).replace("\\", "/"),
         "schema_version": SCHEMA_VERSION,
         "rows_source": int(metrics[0]),
@@ -323,33 +404,83 @@ def process_entry(entry: dict[str, Any], processed_root: Path, connection: duckd
 def build_daily_cells(processed_root: Path, connection: duckdb.DuckDBPyConnection) -> dict[str, Any]:
     manifest_path = processed_root / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {"files": {}}
-    outputs = [str(processed_root / item["output_file"]) for item in manifest.get("files", {}).values()
-               if item.get("status") == "processed" and item.get("output_file") and (processed_root / item["output_file"]).is_file()]
+    index_path = processed_root / "archive_index.json"
+    indexed = json.loads(index_path.read_text(encoding="utf-8")).get("files", []) if index_path.is_file() else None
+    source_states = manifest.get("files", {}).values() if indexed is None else [
+        manifest.get("files", {}).get(entry["file_id"], {}) for entry in indexed
+        if entry.get("status") == "processed"
+    ]
+    active_states = [item for item in source_states if item.get("status") == "processed" and item.get("output_file")]
+    observation_outputs = [str(processed_root / item["output_file"]) for item in active_states
+                           if item.get("storage_mode", "observations") == "observations"
+                           and (processed_root / item["output_file"]).is_file()]
+    shard_outputs = [str(processed_root / item["output_file"]) for item in active_states
+                     if item.get("storage_mode") == "cell_shards" and (processed_root / item["output_file"]).is_file()]
+    outputs = observation_outputs + shard_outputs
     if not outputs:
         raise ValueError("No processed observation files are available to aggregate.")
-    target = processed_root / "daily_cell.parquet"
-    temporary = target.with_name(target.stem + "." + uuid.uuid4().hex + ".tmp.parquet")
+    noaa21_sp_end = max((item.get("date_max") for item in active_states
+                         if item.get("status") == "processed" and item.get("platform") == "NOAA-21"
+                         and item.get("product_type") == "SP" and item.get("date_max")), default=None)
+    target = processed_root / "daily_cell"
+    temporary = target.with_name(target.name + "." + uuid.uuid4().hex + ".tmp")
     connection.execute("SET memory_limit='1GB'")
     connection.execute("SET threads=4")
-    query = """SELECT acq_date,
+    source_queries = []
+    source_parameters: list[Any] = []
+    if observation_outputs:
+        source_queries.append("""SELECT acq_date,
       CAST(GREATEST(0, LEAST(719, FLOOR((latitude + 90.0) / 0.25))) AS INTEGER) AS lat_i,
       CAST(GREATEST(0, LEAST(1439, FLOOR((longitude + 180.0) / 0.25))) AS INTEGER) AS lon_i,
-      sensor_family, platform, product_type, daynight,
+      sensor_family, platform, product_type, EXTRACT(YEAR FROM acq_date)::INTEGER AS year, daynight,
       COUNT(*)::BIGINT AS n_raw,
       1::BIGINT AS n_dedup,
-      SUM(frp) AS frp_sum, MAX(frp) AS frp_max
-      FROM read_parquet(?)
-      GROUP BY acq_date, lat_i, lon_i, sensor_family, platform, product_type, daynight"""
+      COUNT(DISTINCT source_file)::BIGINT AS source_files, SUM(frp) AS frp_sum, MAX(frp) AS frp_max
+      FROM read_parquet(?, hive_partitioning=true)
+      GROUP BY acq_date, lat_i, lon_i, sensor_family, platform, product_type, year, daynight""")
+        source_parameters.append(observation_outputs)
+    if shard_outputs:
+        source_queries.append("""SELECT acq_date, lat_i, lon_i, sensor_family, platform, product_type,
+          year, daynight, n_raw, n_dedup, source_files, frp_sum, frp_max
+          FROM read_parquet(?, hive_partitioning=true)""")
+        source_parameters.append(shard_outputs)
+    query = f"""SELECT acq_date, lat_i, lon_i, sensor_family, platform, product_type, year, daynight,
+      SUM(n_raw)::BIGINT AS n_raw, MAX(n_dedup)::BIGINT AS n_dedup,
+      SUM(source_files)::BIGINT AS source_files, SUM(frp_sum) AS frp_sum, MAX(frp_max) AS frp_max
+      FROM ({' UNION ALL '.join(source_queries)}) AS source_rows
+      WHERE NOT (platform = 'NOAA-21' AND product_type = 'NRT' AND CAST(? AS DATE) IS NOT NULL AND acq_date <= CAST(? AS DATE))
+      GROUP BY acq_date, lat_i, lon_i, sensor_family, platform, product_type, year, daynight"""
     try:
-        connection.execute(f"COPY ({query}) TO {_literal(str(temporary))} (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)", [outputs])
-        rows = int(connection.execute(f"SELECT COUNT(*) FROM read_parquet({_literal(str(temporary))})").fetchone()[0])
-        os.replace(temporary, target)
+        parameters = [*source_parameters, noaa21_sp_end, noaa21_sp_end]
+        connection.execute(f"COPY ({query}) TO {_literal(str(temporary))} (FORMAT PARQUET, PARTITION_BY (product_type, sensor_family, year), COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)", parameters)
+        partition_files = list(temporary.rglob("*.parquet"))
+        if not partition_files:
+            raise ValueError("The daily-cell query produced no partition files.")
+        rows = int(connection.execute("SELECT COUNT(*) FROM read_parquet(?, hive_partitioning=true)", [[str(path) for path in partition_files]]).fetchone()[0])
+        backup = target.with_name(target.name + ".previous")
+        if backup.exists():
+            shutil.rmtree(backup)
+        if target.exists():
+            os.replace(target, backup)
+        try:
+            os.replace(temporary, target)
+        except Exception:
+            if backup.exists() and not target.exists():
+                os.replace(backup, target)
+            raise
+        if backup.exists():
+            shutil.rmtree(backup)
+        legacy = processed_root / "daily_cell.parquet"
+        legacy.unlink(missing_ok=True)
     except Exception:
-        temporary.unlink(missing_ok=True)
+        if temporary.exists():
+            shutil.rmtree(temporary, ignore_errors=True)
         raise
-    return {"output_file": str(target), "cell_rows": rows, "source_files": len(outputs), "grid_degrees": 0.25,
+    return {"output_file": str(target), "partition_files": len(partition_files), "cell_rows": rows, "source_files": len(outputs), "grid_degrees": 0.25,
+            "partition_by": ["product_type", "sensor_family", "year"],
             "grid_convention": "lat_i/lon_i are zero-based indices of cells whose lower-left edge is (-90 + 0.25*lat_i, -180 + 0.25*lon_i); coordinates at +90/+180 are clamped into the last cell.",
-            "n_dedup_policy": "One detected cell-day presence per sensor/platform/product/daynight group; n_raw retains the number of rows. Exact duplicate source rows are counted per source file in manifest.json. Potentially overlapping observations across sensors remain separate."}
+            "n_dedup_policy": "One detected cell-day presence per sensor/platform/product/daynight group; n_raw retains the number of rows. Exact duplicate source rows are counted per source file in manifest.json. Potentially overlapping observations across sensors remain separate.",
+            "noaa21_precedence": {"rule": "Use NOAA-21 SP through the latest processed SP date; include NOAA-21 NRT only after that date.", "sp_end_date": noaa21_sp_end}}
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -363,7 +494,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 and (not args.product or entry["product"] in args.product)
                 and (not args.year or entry["year"] in args.year)
                 and (not args.country or (entry["country"] or "").casefold() == args.country.casefold())
-                and (args.include_nrt or entry["product_type"] != "NRT")]
+                and (not args.sp_only or entry["product_type"] != "NRT")]
     processed_root.mkdir(parents=True, exist_ok=True)
     _atomic_json(processed_root / "archive_index.json", {
         "schema_version": SCHEMA_VERSION,
@@ -376,35 +507,87 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     })
     manifest_path = processed_root / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {"schema_version": SCHEMA_VERSION, "files": {}}
+    successful_current = []
+    convertible_current = []
+    for entry in selected:
+        state = manifest.get("files", {}).get(entry["file_id"], {})
+        signature = {key: entry[key] for key in ("size_bytes", "modified_ns")}
+        output = processed_root / state.get("output_file", "")
+        is_current = not args.force and state.get("status") == "processed" and state.get("signature") == signature and output.is_file()
+        if is_current and args.compact_cells and state.get("storage_mode", "observations") == "observations":
+            convertible_current.append((entry, output))
+        elif is_current and state.get("storage_mode", "observations") == ("cell_shards" if args.compact_cells else "observations"):
+            successful_current.append((entry, output))
+    successful_ids = {entry["file_id"] for entry, _ in successful_current}
+    convertible_ids = {entry["file_id"] for entry, _ in convertible_current}
+    pending = [entry for entry in selected if entry["file_id"] not in successful_ids and entry["file_id"] not in convertible_ids]
+    source_bytes_done = sum(entry["size_bytes"] for entry, _ in successful_current)
+    output_bytes_done = sum(path.stat().st_size for _, path in successful_current)
+    observed_ratio = output_bytes_done / source_bytes_done if source_bytes_done else 0.75
+    estimate_factor = max(observed_ratio, 0.75)
+    estimated_observation_bytes = int(sum(entry["size_bytes"] for entry in pending) * 0.08) if args.compact_cells else int(sum(entry["size_bytes"] for entry in pending) * estimate_factor)
+    if args.compact_cells:
+        estimated_observation_bytes += int(sum(path.stat().st_size for _, path in convertible_current) * 0.15)
+    selected_ids = {entry["file_id"] for entry in selected}
+    daily_input_bytes = 0
+    if args.build_daily_cells:
+        for entry in entries:
+            state = manifest.get("files", {}).get(entry["file_id"], {})
+            signature = {key: entry[key] for key in ("size_bytes", "modified_ns")}
+            already_built = state.get("status") == "processed" and state.get("signature") == signature and state.get("output_file") and (processed_root / state["output_file"]).is_file()
+            if already_built or entry["file_id"] in selected_ids:
+                daily_input_bytes += entry["size_bytes"]
+    estimated_daily_bytes = int(daily_input_bytes * 0.03)
+    free_bytes = shutil.disk_usage(processed_root.parent).free
+    reserve_bytes = 2 * 1024**3
+    required_bytes = estimated_observation_bytes + estimated_daily_bytes + reserve_bytes
+    print(f"Preflight: {len(successful_ids):,}/{len(selected):,} selected files already built; estimated additional space "
+          f"{(estimated_observation_bytes + estimated_daily_bytes) / 1024**3:.1f} GiB plus 2 GiB reserve; "
+          f"{free_bytes / 1024**3:.1f} GiB free.", flush=True)
+    if required_bytes > free_bytes and not args.allow_partial:
+        raise OSError("Insufficient free space for the selected full processing run. No source files were changed. "
+                      "Free disk space, select a smaller subset, or pass --allow-partial to process resumable files until the per-file safety reserve is reached.")
     connection = duckdb.connect(database=":memory:")
     connection.execute("SET memory_limit='1GB'")
     connection.execute("SET threads=4")
     failures: list[dict[str, str]] = []
     skipped = 0
     started = time.monotonic()
-    try:
-        for index, entry in enumerate(selected, 1):
-            try:
-                result = process_entry(entry, processed_root, connection, args.force)
-                if result["status"] == "skipped":
-                    skipped += 1
-                    print(f"[{index}/{len(selected)}] unchanged: {entry['source_file']}", flush=True)
-                    continue
-                print(f"[{index}/{len(selected)}] {result['rows_processed']:,} rows {result['date_min']}..{result['date_max']} : {entry['source_file']}", flush=True)
-            except Exception as exc:
-                message = f"{type(exc).__name__}: {exc}"
-                failures.append({"source_file": entry["source_file"], "error": message})
-                manifest.setdefault("files", {})[entry["file_id"]] = {**entry, "status": "failed", "error": message,
-                    "signature": {"size_bytes": entry["size_bytes"], "modified_ns": entry["modified_ns"]}}
-                manifest["schema_version"] = SCHEMA_VERSION
-                manifest["updated_at_utc"] = datetime.now(timezone.utc).isoformat()
-                _atomic_json(manifest_path, manifest)
-                print(f"[{index}/{len(selected)}] FAILED {entry['source_file']}: {message}", file=sys.stderr, flush=True)
-    finally:
-        connection.close()
+    for index, entry in enumerate(selected, 1):
+        elapsed = time.monotonic() - started
+        eta_seconds = elapsed / max(index - 1, 1) * (len(selected) - index + 1) if index > 1 else None
+        progress = f"[{index}/{len(selected)}] elapsed {elapsed / 60:.1f} min"
+        if eta_seconds is not None:
+            progress += f" · ETA {eta_seconds / 60:.1f} min"
+        try:
+            result = process_entry(entry, processed_root, connection, args.force, compact=args.compact_cells)
+            if result["status"] == "skipped":
+                skipped += 1
+                print(f"{progress} · unchanged: {entry['source_file']}", flush=True)
+                continue
+            print(f"{progress} · {result['rows_processed']:,} rows {result['date_min']}..{result['date_max']} : {entry['source_file']}", flush=True)
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}"
+            failures.append({"source_file": entry["source_file"], "error": message})
+            manifest.setdefault("files", {})[entry["file_id"]] = {**entry, "status": "failed", "error": message,
+                "signature": {"size_bytes": entry["size_bytes"], "modified_ns": entry["modified_ns"]}}
+            manifest["schema_version"] = SCHEMA_VERSION
+            manifest["updated_at_utc"] = datetime.now(timezone.utc).isoformat()
+            _atomic_json(manifest_path, manifest)
+            print(f"{progress} · QUARANTINED in report {entry['source_file']}: {message}", file=sys.stderr, flush=True)
+    connection.close()
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {"files": {}}
-    all_files = list(manifest.get("files", {}).values())
+    manifest_by_id = manifest.get("files", {})
+    current_files = []
+    for entry in entries:
+        state = manifest_by_id.get(entry["file_id"], {})
+        if state.get("signature") == {key: entry[key] for key in ("size_bytes", "modified_ns")}:
+            if state.get("status") == "processed" and not (state.get("output_file") and (processed_root / state["output_file"]).is_file()):
+                current_files.append({**state, "status": "output_missing"})
+            else:
+                current_files.append(state)
+    all_files = current_files
     status_report: dict[str, Any] = defaultdict(lambda: {"files": 0, "rows_source": 0, "rows_processed": 0, "invalid_dates": 0, "invalid_coordinates": 0, "exact_duplicate_rows_within_file": 0, "null_counts": {}, "invalid_numeric_counts": {}})
     for item in all_files:
         group = f"{item.get('sensor_family','unknown')}|{item.get('year','unknown')}|{item.get('product_type','unknown')}"
@@ -420,24 +603,28 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "duration_seconds": round(time.monotonic() - started, 3),
-        "files_discovered": len(entries),
+        "files_discovered": sum(bool(entry.get("supported")) for entry in entries),
+        "files_expected": sum(bool(entry.get("supported")) for entry in entries),
         "files_unsupported": sum(not item.get("supported", False) for item in entries),
         "files_selected": len(selected),
         "files_processed_total": sum(item.get("status") == "processed" for item in all_files),
         "files_failed_total": sum(item.get("status") == "failed" for item in all_files),
         "files_skipped_this_run": skipped,
-        "files_failed_this_run": failures,
         "rows_by_sensor_year_product": dict(status_report),
         "coverage": {"date_min": min((item["date_min"] for item in all_files if item.get("date_min")), default=None),
                      "date_max": max((item["date_max"] for item in all_files if item.get("date_max")), default=None),
-                     "note": "Per-file date_min/date_max are recorded in manifest.json; date gaps remain distinguishable by file and source."},
+                     "note": "Source-file date envelopes only; missing dates are not evidence of zero activity."},
+        "coverage_by_product_platform_year": coverage_table(entries, manifest, processed_root),
+        "quarantine_report": "data/processed/quarantine_report.json",
+        "files_failed_this_run": failures,
     }
     indexed_files = []
     manifest_by_id = manifest.get("files", {})
     for entry in entries:
         state = manifest_by_id.get(entry["file_id"], {})
         current_signature = {key: entry[key] for key in ("size_bytes", "modified_ns")}
-        is_current = state.get("signature") == current_signature and state.get("status") == "processed"
+        output_exists = bool(state.get("output_file") and (processed_root / state["output_file"]).is_file())
+        is_current = state.get("signature") == current_signature and state.get("status") == "processed" and output_exists
         indexed_files.append({
             **{key: value for key, value in entry.items() if key != "source_path"},
             "status": state.get("status") if state.get("signature") == current_signature else "discovered_pending",
@@ -454,7 +641,17 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "files_selected_this_run": len(selected),
         "files": indexed_files,
     })
+    indexed_by_id = {item["file_id"]: item for item in indexed_files}
+    selected_statuses = [indexed_by_id.get(entry["file_id"], {}).get("status", "discovered_pending") for entry in selected]
+    quality["files_selected_processed"] = sum(status == "processed" for status in selected_statuses)
+    quality["files_selected_failed"] = sum(status == "failed" for status in selected_statuses)
+    quality["files_selected_pending"] = sum(status not in {"processed", "failed"} for status in selected_statuses)
     _atomic_json(processed_root / "quality_report.json", quality)
+    _atomic_json(processed_root / "quarantine_report.json", {
+        "generated_at_utc": quality["generated_at_utc"],
+        "source_files_preserved": True,
+        "quarantined_files": failures,
+    })
     if args.build_daily_cells:
         con = duckdb.connect(database=":memory:")
         try:
@@ -472,12 +669,16 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--product", action="append", help="Filter to a product ID; repeat to select several.")
     cli.add_argument("--year", action="append", type=int, help="Filter to a year; repeat to select several.")
     cli.add_argument("--country", help="Exact country-partition name, case-insensitive.")
-    cli.add_argument("--include-nrt", action="store_true", help="Include files classified as NRT; default processes SP only.")
+    cli.add_argument("--sp-only", action="store_true", help="Exclude NRT files. By default both SP and NRT are processed.")
+    cli.add_argument("--allow-partial", action="store_true", help="Skip the full-run disk estimate and process resumably until the per-file disk reserve is reached.")
+    cli.add_argument("--compact-cells", action="store_true", help="Store per-file 0.25-degree cell summaries instead of duplicating every source row in Parquet; raw CSVs and per-file provenance remain available.")
     cli.add_argument("--force", action="store_true", help="Reprocess matching source files even when unchanged.")
-    cli.add_argument("--build-daily-cells", action="store_true", help="Atomically build daily_cell.parquet from processed outputs.")
+    cli.add_argument("--build-daily-cells", action="store_true", help="Atomically build daily_cell/ partitioned Parquet outputs.")
     return cli
 
 
 if __name__ == "__main__":
     report = run(parser().parse_args())
     print(json.dumps(report, indent=2, ensure_ascii=False))
+    if report.get("files_selected_failed", 0) or report.get("files_selected_pending", 0):
+        sys.exit(2)

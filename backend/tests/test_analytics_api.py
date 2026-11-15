@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.analytics_api import AnalyticsQueryError, get_calendar
+from app.analytics_api import AnalyticsQueryError, check_coverage, get_calendar
 from app.main import app
 
 
@@ -48,6 +48,20 @@ def test_calendar_geojson_filters_cell_centers(cells_file):
     assert result["daily_union"][0]["unique_detected_cell_days"] == 1
 
 
+def test_calendar_reads_product_family_year_partitioned_dataset(tmp_path, monkeypatch):
+    dataset = tmp_path / "daily_cell"
+    con = duckdb.connect()
+    con.execute("""CREATE TABLE cells AS SELECT DATE '2025-01-01' AS acq_date, 360::INTEGER AS lat_i,
+      720::INTEGER AS lon_i, 'MODIS'::VARCHAR AS sensor_family, 'Terra'::VARCHAR AS platform,
+      'SP'::VARCHAR AS product_type, 2025::INTEGER AS year, 'D'::VARCHAR AS daynight,
+      1::BIGINT AS n_raw, 1::BIGINT AS n_dedup, 4.0::DOUBLE AS frp_sum, 4.0::DOUBLE AS frp_max""")
+    con.execute("COPY cells TO ? (FORMAT PARQUET, PARTITION_BY (product_type, sensor_family, year))", [str(dataset)])
+    con.close()
+    monkeypatch.setattr("app.analytics_api.DAILY_CELLS", dataset)
+    result = get_calendar(date(2025, 1, 1), date(2025, 1, 1), product_type="SP")
+    assert result["daily_union"][0]["unique_detected_cell_days"] == 1
+
+
 def test_calendar_rejects_bad_polygon_and_long_window(cells_file):
     invalid = {"type": "Polygon", "coordinates": [[[0, 0], [1, 1], [0, 1], [1, 0], [0, 0]]]}
     with pytest.raises(AnalyticsQueryError, match="self-intersects"):
@@ -76,3 +90,57 @@ def test_api_returns_actionable_errors(cells_file):
     assert "west,south,east,north" in invalid.json()["detail"]
     missing = client.get("/api/calendar", params={"start_date": "2025-01-01", "end_date": "2026-01-02"})
     assert missing.status_code == 422
+
+
+def test_coverage_check_labels_date_envelopes_and_spatial_uncertainty(monkeypatch, tmp_path):
+    report = tmp_path / "quality.json"
+    report.write_text(json.dumps({
+        "files_discovered": 2, "files_expected": 2, "files_processed_total": 2,
+        "files_failed_total": 0, "coverage_by_product_platform_year": [{
+            "product_type": "SP", "platform": "NOAA-21", "year": 2025,
+            "first_date": "2025-01-01", "last_date": "2025-12-31",
+            "files_expected": 2, "files_processed": 2, "files_failed": 0,
+            "status": "complete", "source_scope": "global",
+        }],
+    }), encoding="utf-8")
+    monkeypatch.setattr("app.analytics_api.QUALITY_REPORT", report)
+    result = check_coverage(date(2025, 3, 1), date(2025, 3, 3), product_type="SP", platform="NOAA-21", bbox=[-1, -1, 1, 1])
+    assert result["status"] == "fully_covered"
+    assert result["spatial_coverage"] == "not_assessed"
+    assert "not establish daily observation opportunity" in result["coverage_basis"]
+
+
+def test_coverage_check_suggests_alternate_processing_stream(monkeypatch, tmp_path):
+    report = tmp_path / "quality.json"
+    report.write_text(json.dumps({"coverage_by_product_platform_year": [{
+        "product_type": "NRT", "platform": "NOAA-21", "year": 2026,
+        "first_date": "2026-08-01", "last_date": "2026-11-01",
+        "files_expected": 1, "files_processed": 1, "status": "complete", "source_scope": "global",
+    }]}), encoding="utf-8")
+    monkeypatch.setattr("app.analytics_api.QUALITY_REPORT", report)
+    result = check_coverage(date(2026, 10, 1), date(2026, 10, 5), product_type="SP", platform="NOAA-21")
+    assert result["status"] == "not_covered"
+    assert result["suggested_product_type"] == "NRT"
+
+
+def test_coverage_endpoints_publish_file_completeness_and_validate_selection(monkeypatch, tmp_path):
+    report = tmp_path / "quality.json"
+    report.write_text(json.dumps({
+        "files_discovered": 1, "files_expected": 1, "files_processed_total": 1,
+        "files_failed_total": 0, "coverage_by_product_platform_year": [{
+            "product_type": "SP", "platform": "Terra", "year": 2025,
+            "first_date": "2025-01-01", "last_date": "2025-12-31",
+            "files_expected": 1, "files_processed": 1, "status": "complete", "source_scope": "country_files",
+        }],
+    }), encoding="utf-8")
+    monkeypatch.setattr("app.analytics_api.QUALITY_REPORT", report)
+    client = TestClient(app)
+    assert client.get("/api/coverage").json()["coverage"][0]["files_expected"] == 1
+    checked = client.get("/api/coverage/check", params={
+        "start": "2025-04-01", "end": "2025-04-30", "platform": "Terra", "bbox": "-1,-1,1,1",
+    })
+    assert checked.status_code == 200
+    assert checked.json()["status"] == "fully_covered"
+    assert checked.json()["spatial_coverage"] == "not_assessed"
+    invalid = client.get("/api/coverage/check", params={"start": "2025-04-30", "end": "2025-04-01"})
+    assert invalid.status_code == 422
