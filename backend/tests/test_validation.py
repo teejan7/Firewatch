@@ -1,9 +1,11 @@
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest
 from fastapi.testclient import TestClient
+
 from app.main import app
 from app.validation import CsvValidationError, parse_firms_csv
 
@@ -64,11 +66,13 @@ def test_ingestion_api_returns_clear_validation_error_and_health_status():
 
 def test_local_archive_reads_country_files_and_keeps_sensors_distinct(tmp_path, monkeypatch):
     from datetime import date
+
     from app import local_archive
     monkeypatch.setattr(local_archive, "DATA_ROOT", tmp_path)
     modis = tmp_path / "MODIS_SP" / "modis" / "2025"
     viirs = tmp_path / "VIIRS_SNPP_SP" / "viirs-snpp" / "2025"
-    modis.mkdir(parents=True); viirs.mkdir(parents=True)
+    modis.mkdir(parents=True)
+    viirs.mkdir(parents=True)
     (modis / "modis_2025_Testland.csv").write_text("latitude,longitude,acq_date,satellite,instrument,brightness,version\n1,20,2025-01-01,TERRA,MODIS,300,6.1\n1,20,2025-01-10,TERRA,MODIS,301,6.1\n", encoding="utf-8")
     (viirs / "viirs-snpp_2025_Testland.csv").write_text("latitude,longitude,acq_date,satellite,instrument,bright_ti4,version\n2,21,2025-01-01,N,VIIRS,320,2.0\n", encoding="utf-8")
     assert local_archive.available_countries() == ["Testland"]
@@ -80,11 +84,13 @@ def test_local_archive_reads_country_files_and_keeps_sensors_distinct(tmp_path, 
 
 def test_local_archive_catalog_exposes_sources_by_year_and_future_noaa21(tmp_path, monkeypatch):
     from datetime import date
+
     from app import local_archive
     monkeypatch.setattr(local_archive, "DATA_ROOT", tmp_path)
     modis = tmp_path / "MODIS_SP" / "modis" / "2010"
     noaa21 = tmp_path / "VIIRS_NOAA21_SP" / "viirs-jpss2" / "2024"
-    modis.mkdir(parents=True); noaa21.mkdir(parents=True)
+    modis.mkdir(parents=True)
+    noaa21.mkdir(parents=True)
     (modis / "modis_2010_Testland.csv").write_text("latitude,longitude,acq_date,instrument\n1,20,2010-01-01,MODIS\n", encoding="utf-8")
     (noaa21 / "viirs-jpss2_2024_Testland.csv").write_text("latitude,longitude,acq_date,instrument\n2,21,2024-01-01,VIIRS\n", encoding="utf-8")
     assert [p["id"] for p in local_archive.available_products(2010)] == ["MODIS_SP"]

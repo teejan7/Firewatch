@@ -1,8 +1,8 @@
 """Discover and read bounded windows from extracted, all-country FIRMS CSV archives."""
 import calendar
 import csv
-from functools import lru_cache
 from datetime import date
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 

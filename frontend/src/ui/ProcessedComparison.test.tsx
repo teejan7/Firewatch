@@ -11,7 +11,7 @@ const comparison = {
   daily_by_product_platform: [{ date: '2025-01-01', sensor_family: 'VIIRS', platform: 'NOAA-20', product_type: 'SP', detected_cell_days: 4, raw_records: 8, frp_sum_mw: 10, frp_max_mw: 4 }],
 };
 
-function jsonResponse(body: unknown, ok = true) { return Promise.resolve({ ok, status: ok ? 200 : 422, json: async () => body }); }
+function jsonResponse(body: unknown, ok = true) { return Promise.resolve(new Response(JSON.stringify(body), { status: ok ? 200 : 422 })); }
 
 describe('ProcessedComparison', () => {
   beforeEach(() => {
@@ -24,7 +24,7 @@ describe('ProcessedComparison', () => {
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
   it('queries the local calendar and shows sensor-specific day details', async () => {
-    render(<ProcessedComparison api="http://localhost:8000"/>);
+    render(<ProcessedComparison api="http://localhost:8000" apiStatus="online"/>);
     expect(await screen.findByText(/3 of 5 discovered files processed/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Query processed data' }));
     expect(await screen.findByLabelText('2025-01-01: 5 detected cell-days')).toBeTruthy();
@@ -37,7 +37,7 @@ describe('ProcessedComparison', () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => String(input).includes('/api/data-quality')
       ? jsonResponse({ status: 'partial_local_archive', files_processed: 1, files_discovered: 2 })
       : jsonResponse({ detail: 'Processed daily-cell data is unavailable.' }, false)));
-    render(<ProcessedComparison api="http://localhost:8000"/>);
+    render(<ProcessedComparison api="http://localhost:8000" apiStatus="online"/>);
     fireEvent.click(screen.getByRole('button', { name: 'Query processed data' }));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Processed daily-cell data is unavailable.'));
   });

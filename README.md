@@ -4,19 +4,15 @@ FIREWATCH is a responsive exploration dashboard for the NASA Space Apps Challeng
 
 ## Run locally
 
-Requirements: Node.js 20+, npm, and Python 3.10+.
+Requirements: Node.js 20+, npm, and Python 3.10+. On Windows, double-click `start.bat` for first-run setup and launch. It creates `.venv` and installs the app dependencies when needed.
 
 ```powershell
-# Terminal 1: API (PowerShell)
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r backend/requirements.txt
-python -m uvicorn app.main:app --reload --app-dir backend
-
-# Terminal 2: frontend
+# From the project root: starts the API, waits for its health endpoint, then starts Vite.
 npm install
 npm run dev
 ```
+
+Open `http://127.0.0.1:5173`. Stop both services with Ctrl+C. Startup checks ports 8000 and 5173 and reports conflicts. Override them with `FIREWATCH_API_PORT` and `FIREWATCH_WEB_PORT` if needed. The API appears as starting, online, or offline in the dashboard; API-backed controls explain why they are unavailable and can reconnect without a page reload.
 
 To enable NASA requests, create a `.env` file in the project root (`C:\Users\teeja\program\nasa`) with this one line:
 
@@ -90,9 +86,6 @@ An exploratory common-grid comparison utility is documented in [docs/HARMONIZATI
 
 ## Checks
 
-```bash
-npm test
-npm run build
-pip install -r backend/requirements.txt
-python -m pytest backend/tests
+```powershell
+npm run check
 ```

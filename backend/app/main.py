@@ -7,10 +7,24 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+
+from app.analytics_api import (
+    DAILY_CELLS,
+    AnalyticsQueryError,
+    AnalyticsTimeout,
+    coverage_status,
+    get_calendar,
+    unavailable_analysis,
+    validate_bbox,
+)
+from app.firms import ARCHIVE_SOURCES, AREAS, SOURCES, FirmsApiError, load_archive, load_latest
+from app.local_archive import (
+    available_countries,
+    available_products,
+    load_country_window,
+    summarize_country_month,
+)
 from app.validation import CsvValidationError, parse_firms_csv
-from app.firms import AREAS, ARCHIVE_SOURCES, FirmsApiError, SOURCES, load_archive, load_latest
-from app.local_archive import available_countries, available_products, load_country_window, summarize_country_month
-from app.analytics_api import DAILY_CELLS, AnalyticsQueryError, AnalyticsTimeout, coverage_status, get_calendar, unavailable_analysis, validate_bbox
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 

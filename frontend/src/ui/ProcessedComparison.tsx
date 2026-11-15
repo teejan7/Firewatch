@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { AlertCircle, CalendarDays, LoaderCircle, Search, ShieldCheck } from 'lucide-react';
+import { apiGet, errorMessage } from '../lib/apiClient';
 
 type DailyUnion = { date: string; unique_detected_cell_days: number; modis_detected_cell_days: number; viirs_detected_cell_days: number; cross_sensor_overlap_cell_days: number };
 type ProductDaily = { date: string; sensor_family: string; platform: string; product_type: string; detected_cell_days: number; raw_records: number; frp_sum_mw: number | null; frp_max_mw: number | null };
 type CalendarResult = { status: string; calibration_status: string; calibration_reason: string; coverage_status: string; metric_definition: string; daily_union: DailyUnion[]; daily_by_product_platform: ProductDaily[]; data_status: string; method_version: string };
-type Props = { api: string; bbox?: string; onBboxChange?: (bbox: string) => void };
+type Props = { api: string; apiStatus: 'starting' | 'online' | 'offline'; bbox?: string; onBboxChange?: (bbox: string) => void };
 
 const platforms = ['Terra', 'Aqua', 'S-NPP', 'NOAA-20', 'NOAA-21'];
 
@@ -18,7 +19,7 @@ function dateRange(start: string, end: string): string[] {
   return days;
 }
 
-export default function ProcessedComparison({ api, bbox: sharedBbox, onBboxChange }: Props) {
+export default function ProcessedComparison({ api, apiStatus, bbox: sharedBbox, onBboxChange }: Props) {
   const [start, setStart] = useState('2025-01-01');
   const [end, setEnd] = useState('2025-01-31');
   const [localBbox, setLocalBbox] = useState('');
@@ -30,22 +31,22 @@ export default function ProcessedComparison({ api, bbox: sharedBbox, onBboxChang
   const [coverage, setCoverage] = useState<{ status: string; files_processed: number; files_discovered: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [coverageError, setCoverageError] = useState('');
   const [selectedDate, setSelectedDate] = useState('');
   const queryController = useRef<AbortController | null>(null);
   const dates = useMemo(() => dateRange(start, end), [start, end]);
 
   useEffect(() => {
+    if (apiStatus !== 'online') { setCoverage(null); setCoverageError(''); return; }
     const controller = new AbortController();
-    fetch(`${api}/api/data-quality`, { signal: controller.signal }).then(async response => {
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.detail || 'Could not read processed-data coverage.');
-      setCoverage(body);
-    }).catch(() => { if (!controller.signal.aborted) setCoverage(null); });
+    apiGet<{ status: string; files_processed: number; files_discovered: number }>(`${api}/api/data-quality`, { signal: controller.signal }).then(setCoverage)
+      .catch(cause => { if (!controller.signal.aborted) { setCoverage(null); setCoverageError(errorMessage(cause, 'Could not read processed-data coverage.')); } });
     return () => controller.abort();
-  }, [api]);
+  }, [api, apiStatus]);
   useEffect(() => () => { queryController.current?.abort(); queryController.current = null; }, []);
 
   async function query() {
+    if (apiStatus !== 'online') { setError('FIREWATCH API is offline. Start the app with npm run dev, then retry.'); return; }
     if (!dates.length) { setError('Choose a valid date window of at most 366 days.'); return; }
     setLoading(true); setError(''); setResult(null); setSelectedDate('');
     const params = new URLSearchParams({ start_date: start, end_date: end, product_type: productType });
@@ -55,13 +56,11 @@ export default function ProcessedComparison({ api, bbox: sharedBbox, onBboxChang
     const controller = new AbortController(); queryController.current = controller;
     const timeout = window.setTimeout(() => controller.abort(), 32000);
     try {
-      const response = await fetch(`${api}/api/calendar?${params}`, { signal: controller.signal });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.detail || `Calendar query failed (${response.status}).`);
-      setResult(body as CalendarResult);
+      const body = await apiGet<CalendarResult>(`${api}/api/calendar?${params}`, { signal: controller.signal, timeoutMs: 30_000, retries: 0 });
+      setResult(body);
     } catch (cause) {
       if (controller.signal.aborted && queryController.current !== controller) return;
-      setError(cause instanceof Error && cause.name === 'AbortError' ? 'The query timed out or was cancelled. Try a smaller date range or bounding box.' : cause instanceof Error ? cause.message : 'Could not load the local calendar. Check that the backend is running.');
+      setError(cause instanceof Error && cause.name === 'AbortError' ? 'The query timed out or was cancelled. Try a smaller date range or bounding box.' : errorMessage(cause, 'Could not load the local calendar. Check that the backend is running.'));
     } finally { window.clearTimeout(timeout); if (queryController.current === controller) { queryController.current = null; setLoading(false); } }
   }
 
@@ -88,10 +87,12 @@ export default function ProcessedComparison({ api, bbox: sharedBbox, onBboxChang
       <label>End date<input aria-label="Comparison end date" type="date" value={end} onChange={event => setEnd(event.target.value)}/></label>
       <label>AOI bbox · west,south,east,north<input aria-label="Area bounding box" placeholder="Blank = global" value={bbox} onChange={event => setBbox(event.target.value)}/></label>
       <label>Processing stream<select aria-label="Processing stream" value={productType} onChange={event => setProductType(event.target.value as 'SP' | 'NRT')}><option value="SP">Standard Processing</option><option value="NRT">Near Real-Time</option></select></label>
-      <button className="comparison-query" onClick={query} disabled={loading}><Search size={14}/>{loading ? 'Querying local data…' : 'Query processed data'}</button>
+      <button className="comparison-query" onClick={query} disabled={loading||apiStatus!=='online'} title={apiStatus!=='online'?'API offline. Start with npm run dev.':''}><Search size={14}/>{loading ? 'Querying local data…' : 'Query processed data'}</button>
     </div>
     <fieldset className="platform-picker"><legend>Platforms · all available by default</legend>{platforms.map(platform => <label key={platform}><input type="checkbox" checked={selectedPlatforms.includes(platform)} onChange={event => setSelectedPlatforms(current => event.target.checked ? [...current, platform] : current.filter(value => value !== platform))}/>{platform}</label>)}</fieldset>
     {coverage && <p className="coverage-line">{coverage.files_processed.toLocaleString()} of {coverage.files_discovered.toLocaleString()} discovered files processed · missing rows do not mean zero activity.</p>}
+    {coverageError && <p className="coverage-line" role="status">Coverage status unavailable: {coverageError}</p>}
+    {apiStatus !== 'online' && <p className="coverage-line" role="status">Local API {apiStatus}. Start it with <code>npm run dev</code> from the project root to query extracted archives.</p>}
     <p className="coverage-line">The map and overview above use the source named in the page status. This panel summarizes processed cell-days; its aggregate results do not replace map points.</p>
     {loading && <div className="comparison-state" role="status"><LoaderCircle className="spin" size={17}/> Querying local Parquet; NASA services are not contacted.</div>}
     {error && <div className="comparison-error" role="alert"><AlertCircle size={16}/>{error}</div>}

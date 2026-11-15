@@ -7,10 +7,10 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest
-from app.firms import FirmsApiError, load_archive, load_latest
-from app.main import app
 from fastapi.testclient import TestClient
 
+from app.firms import FirmsApiError, load_archive, load_latest
+from app.main import app
 
 CSV = b"latitude,longitude,bright_ti4,acq_date,satellite,instrument,confidence,version,daynight,frp\n35.1,-117.2,330.4,2026-11-13,N21,VIIRS,n,2.0NRT,D,4.2\n"
 
