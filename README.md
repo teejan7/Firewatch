@@ -66,19 +66,4 @@ The validation record documents 48 exact raw-row/daily-count comparisons for Ind
 
 Code was developed with AI assistance; the documented data-processing count validation was performed against original FIRMS files. This statement concerns the recorded historical validation run, not an independent scientific review of the calibration.
 
-## Largest tracked files
 
-The last repository inventory found no tracked file over 50 MB. The following were the ten largest tracked files at that inventory:
-
-| File | Size |
-|---|---:|
-| package-lock.json | 0.17 MB |
-| backend/scripts/build_processed.py | 0.04 MB |
-| frontend/src/ui/App.tsx | 0.03 MB |
-| frontend/src/styles.css | 0.02 MB |
-| backend/tests/test_analytics_api.py | 0.01 MB |
-| frontend/src/ui/ProcessedComparison.tsx | 0.01 MB |
-| docs/DATA_ENGINE.md | 0.01 MB |
-| frontend/src/ui/MapView.tsx | 0.01 MB |
-| backend/tests/test_processing.py | 0.01 MB |
-| backend/app/local_archive.py | 0.01 MB |
