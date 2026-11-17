@@ -1,32 +1,25 @@
 # Testing and verification
 
-Run from the project root. The dashboard itself uses static JSON and should work while the backend is stopped.
+Run from the repository root. The active dashboard uses packaged JSON and can be built or served with the backend stopped.
 
-```powershell
-npm run typecheck
-npm run lint
-npm test
-npm run build
-.venv\Scripts\python.exe -m pytest backend\tests
-```
+~~~powershell
+npm run check
+~~~
 
-`npm run start` starts the local frontend and opens the browser. `npm run preview` serves the production build. The CARTO basemap requires network access; static data and calendar controls do not require NASA credentials or a running backend.
+This runs TypeScript checks, ESLint, frontend tests, the Vite production build, Ruff, and backend pytest. Backend pytest uses an external temporary directory configured in backend/pyproject.toml. A passing software check does not establish scientific validity of the calibration or seasonal analytics. See [Validation](VALIDATION.md) for the last recorded software and data checks; those historical checks were not rerun as part of this documentation update.
 
-The repository's validation record describes previously run checks. Update `docs/VALIDATION.md` with the actual output and date after running checks on the current working tree. Software tests establish application behavior only; they do not establish scientific validity of cross-sensor comparisons.
+Run npm run start to serve the active static dashboard locally; run npm run build to create the production frontend; npm run preview serves that build. The CARTO basemap needs internet access. Packaged JSON and calendar controls do not require NASA credentials or a running API.
 
-## Rebuild local FIRMS aggregates
+## Rebuilding the static data
 
-The daily builder reads extracted files in `data/raw/extracted/` and does not call NASA or require a MAP_KEY. It processes 2020–2025 by default, saves progress after each source file in `data/processed/daily_manifest.json`, and writes a run log to `logs/build_daily.log`. Before each sensor-year it requires 3 GiB free and it stops after a sensor-year if the free space falls below 3 GiB. Each sensor-year's DuckDB spill directory is temporary. `--force` refreshes an existing daily aggregate format; use it when changing aggregation code or quality rules.
+The compact builder reads extracted FIRMS CSVs from data/raw/extracted and does not call NASA or require a MAP_KEY. It processes 2020–2025 by default, writes progress to data/processed/daily_manifest.json, logs to logs/build_daily.log, and enforces a 3 GiB free-space guard. Each sensor-year uses a temporary DuckDB spill directory. The original CSVs are intended to remain unchanged.
 
-```powershell
-# Build/refresh the packaged 2020–2025 window
-.venv\Scripts\python.exe backend\scripts\build_daily.py --force
-
-# Export static frontend JSON after every local aggregate has the current format
+~~~powershell
+.venv\Scripts\python.exe backend\scripts\build_daily.py
 .venv\Scripts\python.exe backend\scripts\build_compact.py
+.venv\Scripts\python.exe backend\scripts\run_harmonize.py
+~~~
 
-# Compare four countries, all 2020–2025, with raw DuckDB counts and legacy series totals
-.venv\Scripts\python.exe backend\scripts\verify_daily.py --markdown
-```
+The extracted source files are absent from the current checkout. Restore the matching FIRMS CSVs before rebuilding daily aggregates or rerunning raw-count validation. Rebuilding static coverage metadata without the extracted filename inventory can change coverage statuses. The prebuilt dashboard JSON remains available in the repository.
 
-To continue after interruption, rerun `build_daily.py`; completed, unchanged files in the current aggregate format are skipped. `run_remaining_years.ps1` and `.bat` call this same builder and preserve its disk guard. Do not remove `data/processed/observations`, `data/processed/cell_shards`, or the original `data/processed/manifest.json` until the validation table is reviewed. Even after a passing validation, this project does not delete those folders automatically.
+The older backend/scripts/build_processed.py path creates separate legacy products for the optional API; it is not required by the active dashboard. See [Data engine](DATA_ENGINE.md) and [API](API.md).

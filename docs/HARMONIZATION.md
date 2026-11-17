@@ -1,31 +1,34 @@
-# FIREWATCH comparison method (exploratory)
+# MODIS–VIIRS comparison and exploratory calibration
 
-## Status
+FIREWATCH contains two distinct cross-sensor paths. They serve different purposes and should not be conflated.
 
-This module implements a versioned, comparison-only common-grid summary. It does **not** calibrate MODIS and VIIRS, estimate missed detections, or claim that the sensors are equivalent. The API returns `calibration_status: insufficient_calibration` and `harmonized_index: null` by design.
+## Active static-dashboard calibration (experimental)
 
-## Method v1.0.0
+The active dashboard loads precomputed country results produced by backend/scripts/run_harmonize.py using the model in backend/scripts/harmonize_core.py. The input is weekly country-level vegetation FRP (FIRMS type=0) from MODIS Terra/Aqua and VIIRS Suomi-NPP/NOAA-20. MODIS is the target/reference; Theil–Sen regression fits a log-log relationship from VIIRS FRP to MODIS FRP.
 
-MODIS active-fire products use an approximately 1 km nominal pixel, while the VIIRS 375 m active-fire product uses a finer nominal pixel. Their detection characteristics, confidence fields, overpass timing, FRP retrievals, and platform/processing histories differ. Processed detections are assigned to a global 0.25-degree latitude/longitude grid by `build_processed.py`; this supports an exploratory common spatial index but does not make those sensor measurements equivalent. For a requested date interval, the comparison query:
+A weekly country record qualifies for fitting only when both families have at least 5 MW vegetation FRP. A country model requires at least 40 such weeks. Countries below that requirement use the deterministic global fallback and receive Low confidence. Leave-one-calendar-year-out (LOYO) metrics are computed where folds have enough training and test weeks. The packaged methods_validation.json reports median R² 0.79769 and median holdout MdAPE 0.409015 (about 40.9%) for 167 country fits with LOYO metrics. R² is computed in log-FRP space. These results are exploratory and do not constitute independent scientific validation. The confidence thresholds are method rules, not NASA quality classes.
 
-1. Selects one processing stream (`SP` or `NRT`) explicitly, and optionally platform, day/night, and bounding-box filters.
-2. Treats a cell on a UTC date with at least one source record as one **detected cell-day** for that sensor family and platform.
-3. Reports the union of positive cell-days, MODIS/VIIRS detected-cell-days, and same-cell/same-date overlap. This overlap is not an event match or a unique-fire count.
-4. Reports raw record totals and FRP only by product/platform. FRP values are never summed across sensors.
+The eligibility rule is not an observation-opportunity model: both families must have detections on each of seven dates somewhere in the combined processed country archive. It does not prove that a given country or pixel was observed on those dates. The subsequent country-week expansion fills missing values with zero for some outputs. Missing dates therefore must not be read as confirmed no-fire observations.
 
-No absent row is converted to zero fire activity. A CSV detection archive does not supply per-cell observation opportunity, so the query cannot tell whether an undetected cell was observed or whether a fire was missed. The grid is intentionally coarse relative to nominal sensor pixels; it is a shared spatial index, not a resolution correction. Bounding boxes crossing the antimeridian are rejected.
+For weeks where both families have FRP, the core weekly output combines MODIS and calibrated VIIRS with a geometric mean; where only one has a value, it uses that value. The displayed residual band uses ±1.96 log-residual standard deviations and is not an independently validated confidence interval. The daily calendar applies a weekly scale to daily VIIRS and adds it to raw daily MODIS; this display formula is not the same as the core weekly composite. The lower multi-year views use the preliminary six-year baseline. Full details are in [Methodology](METHODOLOGY.md) and [Limitations](LIMITATIONS.md).
 
-## Calibration gate
+This is exploratory statistical calibration, not a physical retrieval correction, sensor-equivalence claim, or independently validated harmonization product.
 
-No cross-sensor regression, scaling coefficient, anomaly, or comparable trend is published. A future calibration must be a separately versioned replacement with documented product collection/version, quality filters, co-observation opportunity, event matching, duplicate rules, spatial/temporal validation split, independent validation metrics, uncertainty, and coverage. It must retain all sensor-specific source records. The official challenge resources and product documentation must be reviewed before selecting that method.
+## Optional FastAPI comparison API (not the static calibration)
 
-SP and NRT are deliberately separated. NASA documentation notes that NRT data are operational and may have coverage gaps; prefer Standard Processing for latency-insensitive retrospective work. Never pool streams silently.
+The separate backend/app/harmonize.py module and GET /api/calendar endpoint produce a comparison-only common-grid summary from legacy daily-cell Parquet files. They report detected cell-days and same-cell/same-date overlap, plus sensor/platform-specific record totals and FRP. Cell overlap is not event matching, a unique-fire count, or a MODIS-to-VIIRS conversion. The API response deliberately reports insufficient calibration and does not produce a harmonized index.
+
+That API is optional and is not called by the default static React dashboard. The API may query a 0.25-degree grid; the active dashboard's map is a different country-centroid summary. See [API documentation](API.md) and [Data engine](DATA_ENGINE.md).
+
+## Why comparison needs care
+
+MODIS and VIIRS active-fire products differ in spatial footprint, detection characteristics, confidence conventions, overpass timing, FRP retrieval, platforms, and processing histories. A common grid or country-week regression does not correct these differences. FIRMS detection records also do not provide complete per-location observation-opportunity denominators. Do not infer that a missing record means a sensor observed the location and found no fire.
+
+The active package contains 2020–2025 Standard Processing country files for MODIS Terra/Aqua, VIIRS Suomi-NPP, and VIIRS NOAA-20. NOAA-21 country records, live updates, arbitrary AOI selection, and independent validation of cross-sensor harmonization are not available in the active dashboard.
 
 ## References
 
-- [NASA MODIS active fire product user guide](https://cdn.earthdata.nasa.gov/conduit/upload/10575/MODIS_C6_Fire_User_Guide_B.pdf)
-- [NASA VIIRS 375 m active fire product user guide](https://www.earthdata.nasa.gov/s3fs-public/2024-07/VIIRS_C2_AF-375m_User_Guide_1.0.pdf)
-- [FIRMS active fire archive notes](https://firms.modaps.eosdis.nasa.gov/content/active_fire/)
+- [NASA MODIS active-fire user guide](https://cdn.earthdata.nasa.gov/conduit/upload/10575/MODIS_C6_Fire_User_Guide_B.pdf)
+- [NASA VIIRS active-fire user guide](https://viirsland.gsfc.nasa.gov/PDF/VIIRS_activefire_User_Guide.pdf)
+- [FIRMS active-fire archive notes](https://firms.modaps.eosdis.nasa.gov/content/active_fire/)
 - [NASA FIRMS data and tools](https://www.earthdata.nasa.gov/data/tools/firms)
-
-The guide links describe product characteristics; they do not validate FIREWATCH's exploratory grid metric as a scientific harmonization product.

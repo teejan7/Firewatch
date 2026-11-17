@@ -1,30 +1,36 @@
 # Data and coverage
 
-## Provenance
+## Provenance and runtime
 
-The packaged snapshot was generated from local NASA FIRMS Standard Processing CSV files using the DuckDB streaming pipeline, then exported as static JSON. FIRMS is the data source; this application does not call NASA services at runtime. Keep product, platform, original filename and processing metadata attached to derived rows. See [NASA FIRMS](https://www.earthdata.nasa.gov/data/tools/firms) and the product references in the README.
+The active dashboard uses packaged JSON generated from NASA FIRMS Standard Processing country CSVs. It does not call NASA services at runtime and does not require a NASA API key. The repository includes derived JSON; it does not include the original FIRMS CSVs, local Parquet aggregates, or credentials.
 
-## What is included
+The current package covers 2020–2025 and generated metadata reports 3,859 processed country-scoped source files, 265,659,156 detection records, and 236 country labels. Products/platforms are MODIS Terra/Aqua, VIIRS Suomi-NPP, and VIIRS NOAA-20. NOAA-21 country records are not included in the active static data.
 
-The generated frontend/public/data/quality.json is the source of truth for file and row totals. It reports 3,859 processed country-scoped files and 265,659,156 detections across 236 country labels for the packaged 2020–2025 set. Consult quality.json for product/year coverage. Do not treat absent dates or years as zero activity.
+## Packaged files
 
-The country selector index is `countries.json`; larger activity summaries for the interactive map are in `map_activity.json` and loaded only when the map is opened. Country daily series are loaded on demand from `series/<slug>.json`.
+- countries.json is the country-label index used by the selector.
+- map_activity.json contains country summaries loaded when the map is displayed.
+- series/<slug>.json contains one country's daily sensor/platform records and source metadata.
+- harmonized/<slug>.json contains experimental vegetation-FRP calibration, daily and weekly values, and preliminary multi-year and season summaries.
+- methods_validation.json contains method settings, internal LOYO metrics, confidence counts, and limitations.
+- quality.json contains source-file inventory and processing summary metadata.
 
-Daily country series retain source detections and FRP plus vegetation-only counts/FRP (type=0), quality-filtered counts/FRP, day/night counts/FRP, a platform-day detected flag, and availability flags. Confidence inclusion follows the sensor-specific rule in Methodology. NOAA-21 global files remain excluded from country summaries because verified country attribution is not implemented; no boundary polygons are included.
+Daily raw series include all detection types and retain vegetation-only (type=0), confidence-filtered, day/night, platform-day, and source metadata fields. The active raw calendar summarizes all types; calibration and lower multi-year analytics use vegetation-only records. Detection totals count FIRMS records, not unique fires. FRP is in MW.
 
-## Reproduce locally
+## Rebuild and reproducibility
 
-Original extracted files are under data/raw/extracted/ and were read-only inputs; data/raw/archives/ is empty. Preserve the raw CSVs. The recommended pipeline is backend/scripts/build_daily.py followed by backend/scripts/build_compact.py. The daily builder writes only aggregates to data/processed/daily/ and its independent data/processed/daily_manifest.json; it has a 2 GiB DuckDB memory limit, four threads and a 3 GiB free-disk stop guard. The static exporter reads only daily aggregates, never observations/ or cell_shards/.
+The recommended compact pipeline is backend/scripts/build_daily.py, then backend/scripts/build_compact.py, then backend/scripts/run_harmonize.py. The daily builder reads extracted files from data/raw/extracted, creates compact Parquet aggregates under data/processed/daily, and updates data/processed/daily_manifest.json. It uses DuckDB with a 2 GiB memory limit, four threads, and a 3 GiB free-disk stop guard. The static exporter reads the daily manifest and aggregates; it does not need the older observations or cell_shards outputs.
 
-Build the default 2020–2025 local daily aggregates, then export static browser data:
+The original extracted CSVs are absent from the current checkout. Restore the matching FIRMS country CSVs before rebuilding daily aggregates or repeating raw-count validation. Existing daily Parquet may support regenerating some products, but without the extracted source inventory the exporter cannot reconstruct the original source-file coverage. Do not treat a rebuild without those inputs as equivalent to the packaged release.
 
-```powershell
+~~~powershell
 .venv\Scripts\python.exe backend\scripts\build_daily.py
 .venv\Scripts\python.exe backend\scripts\build_compact.py
-```
+.venv\Scripts\python.exe backend\scripts\run_harmonize.py
+~~~
 
-The static JSON folder is required for a deployable release. Raw CSVs, Parquet, .env and credentials must not be published. The daily builder and exporter do not delete legacy observations/cell_shards; review the validation table before deciding whether to remove those old intermediates yourself.
+The derived dashboard JSON is required for the static app. Raw CSVs, Parquet, .env files, and credentials should not be published. The optional older FastAPI path uses separate processed daily-cell artifacts; it is not the runtime data path for the active dashboard. See [Data engine](DATA_ENGINE.md) and [API](API.md).
 
-## Interpretation
+## Coverage and interpretation
 
-FRP and detection totals are observations from different instruments with different pixel footprints, overpass times, and detection behavior. They are not interchangeable. Source-file completeness does not indicate continuous coverage or absence of fire. The package does not estimate missed detections or sensor observation opportunity.
+Coverage is based on discovered source filenames and which files were successfully aggregated. It does not indicate per-location satellite observation opportunity. A missing date or row does not prove no fire occurred. MODIS and VIIRS have different footprints and detection behavior; their FRP and counts are not automatically comparable. The calibration's operating-week method does not establish country-specific observation opportunity. See [Methodology](METHODOLOGY.md), [Harmonization](HARMONIZATION.md), and [Limitations](LIMITATIONS.md).

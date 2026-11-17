@@ -1,18 +1,23 @@
-# Local analytics API
+# Optional local FastAPI prototype
 
-Run the FastAPI app locally with the commands in `README.md`; interactive OpenAPI docs are at `http://localhost:8000/docs`.
+The FastAPI service is separate from the active static dashboard. The default frontend entry point renders StaticApp and reads packaged JSON; it does not call these endpoints. Start the API from the project root with npm run api. Interactive OpenAPI documentation is available at http://localhost:8000/docs. The API is intended for local use and is not required to run or build the active dashboard.
 
-## Processed archive endpoints
+## Routes
 
-- `GET /api/data-quality` returns the local quality report and processed source coverage. A partial archive is labeled `partial_local_archive`.
-- `GET /api/coverage` returns expected/processed file counts and source date envelopes by product type, platform, and year. `GET /api/coverage/check?start=2025-01-01&end=2025-01-31&product_type=SP&platform=NOAA-20&bbox=-1,-1,1,1` reports full/partial/no date-envelope coverage and the nearest range or alternate-stream suggestion. A bbox is validated, but spatial coverage remains `not_assessed`; this does not claim observation opportunity.
-- `GET /api/calendar?start_date=2025-01-01&end_date=2025-01-31&bbox=-1,-1,1,1&product_type=SP` queries `data/processed/daily_cell/`, partitioned by product type, sensor family, and year. Date windows are limited to 366 days. `bbox` is WGS84 `west,south,east,north`; use either that or `geojson` (a URL-encoded GeoJSON Polygon/MultiPolygon). Optional repeated `platform` values select `Terra`, `Aqua`, `S-NPP`, `NOAA-20`, or `NOAA-21`; `daynight` is `D` or `N`. SP and NRT are queried separately. GeoJSON selection uses grid-cell centers on the common 0.25° grid.
-- `GET /api/climatology`, `/api/anomalies`, and `/api/critical-periods` currently return `status: insufficient_baseline` and an empty `results` array. The current files do not support validated multi-year climatology, anomaly, or seasonal claims. These endpoints state why rather than filling missing dates with zeros.
+- GET /api/health reports whether legacy daily-cell data is available and whether a FIRMS key is configured. It does not verify the static dashboard JSON.
+- GET /api/firms/latest and GET /api/firms/archive query the NASA FIRMS area CSV service. They require a server-side FIRMS_MAP_KEY. Keep the key out of frontend code.
+- POST /api/ingest/firms accepts a UTF-8 FIRMS CSV preview up to 10 MB, validates it, and returns parsed records. It does not save the upload or add it to the dashboard.
+- GET /api/local-archive/countries, /api/local-archive/catalog, /api/local-archive/records, and /api/local-archive/calendar query CSVs under data/raw/extracted. That source folder is absent in the current checkout.
+- GET /api/data-quality and GET /api/coverage expose legacy local processing metadata. GET /api/coverage/check reports source-file date-envelope ranges and suggestions; spatial observation opportunity remains unassessed.
+- GET /api/calendar queries older data/processed/daily_cell data, if available. It supports a date range up to 366 days, SP or NRT selection, optional platform and day/night filters, and either a WGS84 bounding box or GeoJSON Polygon/MultiPolygon. GeoJSON selection uses common-grid cell centers.
+- GET /api/climatology, GET /api/anomalies, and GET /api/critical-periods currently return insufficient_baseline with empty results. They do not compute these products.
 
-The calendar response is `comparison_only`, carries `calibration_status: insufficient_calibration`, keeps daily sensor/platform statistics distinct, and includes same-cell/date overlap. This is not a count of unique fires or a scientific MODIS/VIIRS conversion. Missing detections are never interpreted as zero activity.
+## Comparison semantics
+
+The API calendar is comparison-only. It reports detected cell-days and same-cell/same-date overlap while keeping sensor and platform statistics separate. It does not count unique fires, perform event matching, estimate missed detections, or convert VIIRS FRP to MODIS-equivalent FRP. Missing detections are not zero-fire evidence. This API path is distinct from the experimental static-dashboard calibration documented in [Harmonization](HARMONIZATION.md).
 
 ## Bounds and security
 
-Calendar requests are limited to 366 days and run with a 30-second query interrupt. API requests are limited to 120 per client per minute in-process. This lightweight limiter resets on restart and is intended for local use, not as a distributed security control. CORS defaults to `http://localhost:5173` and `http://127.0.0.1:5173`; set `FIREWATCH_CORS_ORIGINS` to a comma-separated list for another frontend origin. Wildcard CORS entries are ignored.
+Calendar requests are limited to 366 days and run with a 30-second query interrupt. API requests are limited to 120 per client per minute in-process; the limiter resets on restart and is not a distributed security control. CORS defaults to localhost:5173 and 127.0.0.1:5173; FIREWATCH_CORS_ORIGINS can set a comma-separated list for another frontend origin. Wildcard CORS entries are ignored.
 
-The existing FIRMS live endpoint remains separate and is not called by these local analytics routes. Its MAP_KEY stays server-side. Local archive country endpoints and the Parquet calendar are separate query paths; the calendar currently accepts bbox/GeoJSON and does not invent country polygons.
+The upload and local archive routes are not persistent storage. Do not expose this development API publicly without a separate security review. FIRMS live/archive access uses the server-side key and is not used by the active static dashboard.

@@ -1,49 +1,42 @@
-# FIREWATCH processed data engine
+# FIREWATCH data engine
 
-## Scope and source safety
+FIREWATCH has a compact pipeline for the active static dashboard and an older processing path for optional local API queries. They write different products and should not be confused.
 
-`backend/scripts/build_processed.py` discovers FIRMS CSV files below `data/raw/extracted/`, classifies known MODIS, VIIRS S-NPP, NOAA-20 and NOAA-21 products, and writes normalized Parquet plus manifests below `data/processed/`. It never writes to the raw archive. The processor distinguishes country/year files from NOAA-21 global files and labels `fire_archive_*` as SP and `fire_nrt_*` as NRT.
+## Active static-dashboard pipeline
 
-Run a small country/year subset first:
+The active browser app reads only JSON under frontend/public/data. It does not access raw CSVs, Parquet, FastAPI, or NASA at runtime.
 
-```powershell
-.venv\Scripts\python.exe backend\scripts\build_processed.py --product MODIS_SP --product VIIRS_SNPP_SP --product VIIRS_NOAA20_SP --year 2025 --country India --build-daily-cells
-```
+1. **Daily aggregation — backend/scripts/build_daily.py.** Discovers supported local FIRMS country CSVs under data/raw/extracted and uses DuckDB to aggregate directly from CSV. The default build covers 2020–2025. It writes compact Parquet outputs under data/processed/daily and a resumable data/processed/daily_manifest.json. Aggregates include daily country/platform rows and 1-degree display-grid rows, detection and FRP summaries, vegetation (type=0), nominal/high-confidence subset, day/night fields, a reported-detection platform-day flag, and source metadata. DuckDB uses a 2 GiB memory limit and four threads; a 3 GiB free-space guard stops work before or after each sensor-year. Temporary spill directories are removed after each sensor-year.
+2. **Static export — backend/scripts/build_compact.py.** Reads current-format daily aggregates and their manifest, then generates countries.json, country series, map_activity.json, quality.json, and related JSON in frontend/public/data. The active map uses country-level observed centroids and summary totals; it does not create boundaries or fire perimeters.
+3. **Experimental analytics — backend/scripts/run_harmonize.py and backend/scripts/harmonize_core.py.** Reads the 2020–2025 daily aggregates, filters to vegetation records, fits the exploratory weekly FRP calibration, and writes per-country analytics plus methods_validation.json. See METHODOLOGY.md and HARMONIZATION.md.
 
-Process every discovered eligible Standard Processing and Near Real-Time source by default:
+The source CSVs are not in the repository and are absent from the current checkout. The compact build and raw validation therefore cannot be fully reproduced here until matching inputs are restored. If build_compact.py is run without the extracted CSV inventory, its source-coverage discovery cannot recreate the original coverage statuses.
 
-```powershell
-.venv\Scripts\python.exe backend\scripts\build_processed.py --build-daily-cells
-```
+## Older local-API processing path
 
-For a smaller, submission-friendly 2020–2026 build on a low-space drive, double-click `process_2020_2026_compact.bat`. It writes per-file cell summaries instead of a duplicate row-level Parquet archive, then assembles the partitioned daily-cell dataset. Existing row-level Parquet outputs are converted to compact shards from those outputs rather than rereading their CSVs. The original CSVs remain the source of truth; manifests retain file provenance and row-quality counts. The estimate uses conservative compact-output and daily-output factors; if a per-file reserve check stops the run, free space or narrow the years and rerun.
+backend/scripts/build_processed.py is a separate processor for local analytics. It can create normalized row-level observation Parquet, manifests and quality reports, plus daily-cell summaries under data/processed. Its daily-cell data uses a 0.25-degree spatial grid and is consumed by the optional FastAPI comparison API. It does not power the active static dashboard or perform scientific cross-sensor calibration. This checkout currently lacks the observations and cell_shards directories; the daily-cell artifact and related metadata may be local and are not packaged with a fresh Git clone.
 
-The run is resumable and idempotent: unchanged source files with a completed output are skipped using the source path and file-size/mtime signature. A changed source file is reprocessed into a temporary Parquet file and atomically replaces its prior output only after conversion succeeds. Startup estimates the selected work and keeps a 2 GiB reserve; use product/year filters or free disk space if the estimate does not fit. `--allow-partial` opts into processing until the per-file space guard stops work. `--sp-only` excludes NRT files. `--force` intentionally reprocesses unchanged files.
+The daily-cell comparison query reports sensor/platform-specific detected cell-days and same-cell/date overlap. It is not event matching, a count of unique fires, or a calibrated MODIS/VIIRS conversion. Coverage endpoints use file inventories and date envelopes; their spatial coverage is not assessed.
 
-## Outputs
+## Run commands
 
-- `data/processed/archive_index.json`: discovered file paths, product/platform/processing type, year, scope, size, status, and coverage when processing has completed.
-- `data/processed/manifest.json`: file signatures, validation counts, output partitions, observed date limits, missing-field counts, processing versions, and exact duplicate counts.
-- `data/processed/quality_report.json`: run timing, file totals, failures and row-quality summaries by sensor/year/product.
-- `data/processed/observations/`: Parquet partitions by sensor family, year, product type and source product.
-- `data/processed/cell_shards/`: compact per-source cell summaries used by low-space builds.
-- `data/processed/daily_cell/product_type=…/sensor_family=…/year=…/`: optional 0.25-degree daily Parquet partitions.
-- `data/processed/quarantine_report.json`: per-file processing failures and reasons; source CSVs are never moved or changed.
+From the repository root, after placing supported FIRMS country CSVs under data/raw/extracted and installing Python dependencies:
 
-The full observation Parquet schema includes acquisition date/time, coordinates, satellite, instrument, sensor family, platform, product type, confidence, day/night, FRP, MODIS brightness, VIIRS `bright_ti4`/`bright_ti5`, source filename, source record ID, processing version, product ID, an exact-row fingerprint, and JSON with original source columns. Compact shards keep cell date, grid indices, sensor family, platform, stream, day/night, raw row count, cell presence, source-file count, and FRP summary. The original CSV remains at the source path recorded in the manifest; compact shards do not duplicate its columns. The daily-cell dataset is partitioned by product type, sensor family, and year. Acquisition time, platform, and day/night are preserved in the full observation outputs; compact mode does not calculate observation opportunity. Sensor-specific brightness fields are never converted into one another. Missing values remain null.
+~~~powershell
+.venv\Scripts\python.exe backend\scripts\build_daily.py
+.venv\Scripts\python.exe backend\scripts\build_compact.py
+.venv\Scripts\python.exe backend\scripts\run_harmonize.py
+~~~
 
-Rows with invalid dates or out-of-range/missing coordinates are reported and omitted from the analytical Parquet. Non-numeric optional measurements are reported separately and remain null in the normalized fields. Their source CSV rows remain untouched. The source record ID is the discovered source-file identity plus CSV row number. The exact duplicate metric uses a fingerprint of all original fields and is reported per source file. Raw source rows remain present. `daily_cell.n_raw` counts valid rows; `n_dedup` is one cell-day presence for each date/cell/sensor/platform/product/daynight group. It is not a count of unique fires. This definition collapses repeated rows into cell presence within each group, while retaining raw rows and exact-duplicate diagnostics. It does not infer duplicates from proximity or merge sensors. NOAA-21 SP takes precedence through the latest successfully processed SP date; NRT is included only afterward. Original NRT source rows remain available in the observations partitions.
+To use the older API query data, run the documented build_processed.py command in [API documentation](API.md) only when that separate dataset path is needed. Do not assume the two pipelines produce interchangeable Parquet schemas.
 
-The grid uses 0.25-degree cells. `lat_i` and `lon_i` are zero-based indices of the cell's lower-left edge at `(-90 + 0.25*lat_i, -180 + 0.25*lon_i)`. Points at +90/+180 are clamped into the last valid cell. `n_raw` and `n_dedup` stay separate; FRP sums/maxima use available raw FRP observations and null FRP is not replaced with zero.
+## Data integrity notes
 
-## Current integration boundary
+Source CSVs are intended to remain read-only. Detection totals are record counts, not unique-fire counts. The reported platform-day flag is not an observation-opportunity denominator. The builder filters invalid dates/coordinates but does not independently count exact duplicate input rows in the compact export metadata. The recorded raw-count validation is limited to four countries and six years and does not validate the calibration scientifically.
 
-`GET /api/coverage` reports expected and processed files plus source date envelopes by product type, platform, and year. `GET /api/coverage/check?start=…&end=…&product_type=…&platform=…&bbox=…` checks the selected source-file date envelopes and suggests an alternate stream when available. These checks do not imply observation opportunity or zero activity; spatial coverage remains unassessed.
+## Related documentation
 
-The dashboard's broader selection flow, map aggregation, calibration, and anomaly analysis remain later phases. The processor does not perform scientific harmonization.
-
-## Static release data
-
-`backend/scripts/build_compact.py` exports selected country-scoped SP entries from the processed manifest into `frontend/public/data/`. It keeps daily records grouped by country, UTC date, sensor family, platform and product; the separate map grid is a 1-degree display aggregate. A quality index compares local extracted source filenames with processed outputs by country/product/year. Global NOAA-21 feeds are excluded from this country export. The script does not infer boundary polygons, calibrate sensors, or calculate anomalies. It caps the JSON output at 80 MiB and records a `not_calibrated` validation status.
-
-The active browser application reads only these static JSON files. The FastAPI endpoints in `docs/API.md` remain optional local analysis tools and are not required for the static dashboard or its preview.
+- [Data and coverage](DATA.md)
+- [Optional FastAPI endpoints](API.md)
+- [Methodology](METHODOLOGY.md)
+- [Validation record](VALIDATION.md)
